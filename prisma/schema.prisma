@@ -1,0 +1,63 @@
+// Basira (بصيرة) — Satellite Crop Intelligence Platform
+// Prisma schema: classification runs, per-class statistics, areas of interest,
+// and uploaded training-sample sets.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Run {
+  id        Int         @id @default(autoincrement())
+  mode      String // "demo" | "live"
+  algorithm String // rf | gtb | svm | cart | nb | mindist_e | mindist_m | kmeans
+  season    String // winter | summer | full | custom
+  dateFrom  String? // ISO date (custom range)
+  dateTo    String? // ISO date (custom range)
+  oa        Float // overall accuracy 0..1
+  kappa     Float // kappa coefficient
+  mapUrl    String? // overlay image url (demo mode)
+  durationMs Int     @default(0)
+  aoiId     Int?
+  aoi       Aoi?       @relation(fields: [aoiId], references: [id])
+  stats     ClassStat[]
+  createdAt DateTime    @default(now())
+}
+
+model ClassStat {
+  id      Int    @id @default(autoincrement())
+  runId   Int
+  run     Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  classId Int
+  code    String
+  nameEn  String
+  nameAr  String
+  color   String
+  areaKm2 Float
+  percent Float
+  pa      Float? // producer's accuracy
+  ua      Float? // user's accuracy
+  f1      Float? // F1-score
+}
+
+model Aoi {
+  id        Int    @id @default(autoincrement())
+  name      String
+  nameAr    String
+  geojson   String // serialized GeoJSON geometry
+  isDefault Boolean @default(false)
+  runs      Run[]
+  createdAt DateTime @default(now())
+}
+
+model SampleSet {
+  id        Int      @id @default(autoincrement())
+  name      String
+  source    String // "csv" | "drawn"
+  points    String // JSON: [{ class, classEn, classAr, lon, lat }]
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --text: #111827;
+    --text-sub: #6B7280;
+    --border: #E5E7EB;
+    --connector: #94A3B8;
+  }
+  body {
+    font-family: 'DejaVu Sans', 'FreeSerif', sans-serif;
+    background: #FFFFFF;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  #root { width: fit-content; min-width: 980px; margin: 0 auto; padding: 44px 44px; background: #FFFFFF; }
+
+  .flow-title { font-size: 22px; font-weight: 700; color: #17324D; text-align: center; }
+  .flow-sub { font-size: 13px; color: var(--text-sub); text-align: center; margin: 6px 0 26px 0; }
+
+  .layer { background: #F8FAFC; border-radius: 12px; padding: 16px 20px; width: 960px; }
+  .layer-title { font-size: 15.5px; font-weight: 700; padding: 9px 14px; border-radius: 8px; margin-bottom: 12px; }
+  .layer-title .en { font-size: 11px; font-weight: 400; opacity: 0.75; }
+  .cards { display: flex; gap: 12px; }
+  .card {
+    flex: 1; background: #FFFFFF; border: 1px solid #DDE3EA; border-radius: 8px;
+    padding: 10px 12px; text-align: center;
+  }
+  .card-name { font-size: 13px; font-weight: 600; color: #1E3A5F; margin-bottom: 4px; }
+  .card-desc { font-size: 10.5px; color: var(--text-sub); line-height: 1.5; }
+
+  .arrow-row { display: flex; justify-content: center; gap: 220px; margin: 6px 0; }
+  .arrow { text-align: center; color: var(--connector); font-size: 22px; line-height: 1; }
+  .arrow-label { font-size: 10.5px; color: var(--text-sub); text-align: center; margin-top: 2px; }
+  .arrow-block { display: flex; flex-direction: column; align-items: center; }
+
+  /* Same-hue blue-gray progression for 5 layers */
+  .l1 .layer-title { background: #F1F5F9; color: #334155; border-right: 4px solid #94A3B8; }
+  .l2 .layer-title { background: #EBF0F5; color: #2D4156; border-right: 4px solid #7B8FA3; }
+  .l3 .layer-title { background: #E4EAF1; color: #2D4156; border-right: 4px solid #6B809A; }
+  .l4 .layer-title { background: #DDE5EE; color: #283C52; border-right: 4px solid #5B7590; }
+  .l5 .layer-title { background: #D5DFEA; color: #23364D; border-right: 4px solid #4B6A87; }
+
+  .ext { border: 1.5px solid #8B5CF6; background: #FAF9FF; }
+  .ext .card-name { color: #5B21B6; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="flow-title">المعمارية المقترحة للموقع المستقل - المرحلة الثانية</div>
+  <div class="flow-sub">Standalone Website Architecture (Phase 2) - AgriWatch on your own domain</div>
+
+  <div class="layer l1">
+    <div class="layer-title">المستخدمون <span class="en">| Users (public website)</span></div>
+    <div class="cards">
+      <div class="card"><div class="card-name">باحثون وطلاب</div><div class="card-desc">خرائط ودقة الخوارزميات</div></div>
+      <div class="card"><div class="card-name">وزارة الزراعة</div><div class="card-desc">مساحات المحاصيل والتقارير</div></div>
+      <div class="card"><div class="card-name">مزارعون ومستثمرون</div><div class="card-desc">متابعة الحقول والمواسم</div></div>
+    </div>
+  </div>
+
+  <div class="arrow-block">
+    <div class="arrow">&#8595;</div>
+    <div class="arrow-label">HTTPS - نطاق خاص مثل agriwatch.eg</div>
+  </div>
+
+  <div class="layer l2">
+    <div class="layer-title">واجهة المستخدم - Frontend <span class="en">| Next.js + React</span></div>
+    <div class="cards">
+      <div class="card"><div class="card-name">خريطة تفاعلية</div><div class="card-desc">React-Leaflet / MapLibre GL</div></div>
+      <div class="card"><div class="card-name">اختيار المنطقة والموسم</div><div class="card-desc">رسم حدود + قوائم المواسم</div></div>
+      <div class="card"><div class="card-name">لوحة النتائج</div><div class="card-desc">دقة الخوارزميات ومساحات المحاصيل</div></div>
+      <div class="card"><div class="card-name">واجهة ثنائية اللغة</div><div class="card-desc">عربي / English</div></div>
+    </div>
+  </div>
+
+  <div class="arrow-block">
+    <div class="arrow">&#8595;</div>
+    <div class="arrow-label">REST API (JSON)</div>
+  </div>
+
+  <div class="layer l3">
+    <div class="layer-title">الخادم الخلفي - Backend <span class="en">| Python FastAPI</span></div>
+    <div class="cards">
+      <div class="card"><div class="card-name">المصادقة وإدارة المستخدمين</div><div class="card-desc">JWT - صلاحيات متعددة</div></div>
+      <div class="card"><div class="card-name">خدمات التحليل</div><div class="card-desc">تشغيل التصنيف وطلب التقارير</div></div>
+      <div class="card"><div class="card-name">طابور المهام</div><div class="card-desc">Celery + Redis للمهام الطويلة</div></div>
+      <div class="card"><div class="card-name">توليد طبقات الخريطة</div><div class="card-desc">MapID / Tile URLs من GEE</div></div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <div class="arrow-block"><div class="arrow">&#8595;</div><div class="arrow-label">Earth Engine API</div></div>
+    <div class="arrow-block"><div class="arrow">&#8595;</div><div class="arrow-label">استعلامات SQL</div></div>
+  </div>
+
+  <div class="layer l4">
+    <div class="layer-title">المعالجة السحابية وقواعد البيانات <span class="en">| Processing &amp; Data</span></div>
+    <div class="cards">
+      <div class="card ext">
+        <div class="card-name">Google Earth Engine</div>
+        <div class="card-desc">Service Account - أرشيف Sentinel-1/2<br>خوارزميات ML وتصدير GeoTIFF</div>
+      </div>
+      <div class="card"><div class="card-name">PostGIS</div><div class="card-desc">حدود الحقول وعينات التدريب<br>والمستخدمون</div></div>
+      <div class="card"><div class="card-name">تخزين المخرجات</div><div class="card-desc">GeoTIFF وبلاطات الخرائط<br>Cloud Storage / S3</div></div>
+    </div>
+  </div>
+
+  <div class="arrow-block">
+    <div class="arrow">&#8595;</div>
+    <div class="arrow-label">نشر موحّد</div>
+  </div>
+
+  <div class="layer l5">
+    <div class="layer-title">النشر والتشغيل <span class="en">| Deployment</span></div>
+    <div class="cards">
+      <div class="card"><div class="card-name">Docker Compose</div><div class="card-desc">حاويات موحدة لكل الخدمات</div></div>
+      <div class="card"><div class="card-name">سيرفر خاص / Cloud Run</div><div class="card-desc">VPS أو Google Cloud</div></div>
+      <div class="card"><div class="card-name">مراقبة وتحديثات</div><div class="card-desc">سجلات + نسخ احتياطي يومي</div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

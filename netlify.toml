@@ -1,0 +1,22 @@
+# Basira — Netlify configuration
+# Next.js site + background GEE function + Blobs-backed job results.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Official Next.js runtime: turns App Router pages and /api routes into
+# Netlify functions automatically.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Long-running Earth Engine jobs (classification / compare-all) run as a
+# background function (up to 15 min); results are polled from Blobs.
+# GEE_PRIVATE_KEY_JSON must be set in Site settings → Environment variables.

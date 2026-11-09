@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --text: #111827;
+    --text-sub: #6B7280;
+    --border: #E5E7EB;
+    --connector: #94A3B8;
+  }
+  body {
+    font-family: 'DejaVu Sans', 'FreeSerif', sans-serif;
+    background: #FFFFFF;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  #root { width: fit-content; min-width: 860px; margin: 0 auto; padding: 44px 40px; background: #FFFFFF; }
+
+  .flow-title { font-size: 22px; font-weight: 700; color: #17324D; text-align: center; }
+  .flow-sub { font-size: 13px; color: var(--text-sub); text-align: center; margin: 6px 0 26px 0; }
+
+  .phase-group { background: #F8FAFC; border-radius: 12px; padding: 18px 22px; width: 820px; }
+  .phase-title { font-size: 16px; font-weight: 700; padding: 10px 16px; border-radius: 8px; margin-bottom: 14px; }
+  .phase-title .en { font-size: 11px; font-weight: 400; color: inherit; opacity: 0.75; }
+  .phase-steps { display: flex; flex-direction: column; gap: 8px; padding-right: 10px; }
+  .phase-step {
+    font-size: 13.5px; font-weight: 400; color: var(--text);
+    padding: 8px 14px; background: #FFFFFF; border-radius: 6px;
+    border: 1px solid #DDE3EA; display: flex; align-items: center;
+  }
+  .phase-step .en { font-size: 10.5px; color: var(--text-sub); margin-right: 8px; }
+  .step-num {
+    flex-shrink: 0; display: inline-block; width: 22px; height: 22px; line-height: 22px;
+    text-align: center; border-radius: 50%; font-size: 11.5px; font-weight: 600;
+    margin-left: 10px;
+  }
+  .arrow { text-align: center; color: var(--connector); font-size: 22px; margin: 6px 0; line-height: 1; }
+
+  /* Scheme B: neutral gray base + blue accent progression (5 phases) */
+  .phase-1 .phase-title { background: #F1F5F9; color: #334155; border-right: 4px solid #94A3B8; }
+  .phase-1 .step-num { background: #F1F5F9; color: #475569; }
+  .phase-2 .phase-title { background: #EBF0F5; color: #2D4156; border-right: 4px solid #7B8FA3; }
+  .phase-2 .step-num { background: #E2E8F0; color: #475569; }
+  .phase-3 .phase-title { background: #E4EAF1; color: #2D4156; border-right: 4px solid #6B809A; }
+  .phase-3 .step-num { background: #D9E2EC; color: #2D4156; }
+  .phase-4 .phase-title { background: #DDE5EE; color: #283C52; border-right: 4px solid #5B7590; }
+  .phase-4 .step-num { background: #CFDAE6; color: #283C52; }
+  .phase-5 .phase-title { background: #D5DFEA; color: #23364D; border-right: 4px solid #4B6A87; }
+  .phase-5 .step-num { background: #C4D2E0; color: #23364D; }
+
+  .footer-note { font-size: 11px; color: var(--text-sub); text-align: center; margin-top: 20px; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="flow-title">خط معالجة منصة AgriWatch - قسم برج العرب، الإسكندرية</div>
+  <div class="flow-sub">AgriWatch Processing Pipeline - Borj El Arab, Alexandria, Egypt (Sentinel-2)</div>
+
+  <div class="phase-group phase-1">
+    <div class="phase-title">المرحلة الأولى: تحديد المنطقة والبيانات <span class="en">| Area &amp; Data</span></div>
+    <div class="phase-steps">
+      <div class="phase-step"><span class="step-num">1</span>منطقة الدراسة: قسم برج العرب - محافظة الإسكندرية (596 كم²) - الحدود مدمجة داخل الكود <span class="en">AOI embedded</span></div>
+      <div class="phase-step"><span class="step-num">2</span>بيانات Sentinel-2 L2A - انعكاس سطحي بدقة 10 متر <span class="en">COPERNICUS/S2_SR_HARMONIZED</span></div>
+      <div class="phase-step"><span class="step-num">3</span>اختيار الفترة الزمنية: موسم شتوي (نوفمبر - أبريل) أو صيفي (مايو - أكتوبر) أو مخصصة <span class="en">Season preset</span></div>
+      <div class="phase-step"><span class="step-num">4</span>تصفية المشاهد حسب نسبة السحب (أقل من 20%) <span class="en">CLOUDY_PIXEL_PERCENTAGE</span></div>
+    </div>
+  </div>
+  <div class="arrow">&#8595;</div>
+
+  <div class="phase-group phase-2">
+    <div class="phase-title">المرحلة الثانية: المعالجة المسبقة <span class="en">| Preprocessing</span></div>
+    <div class="phase-steps">
+      <div class="phase-step"><span class="step-num">5</span>إزالة السحب وظلالها باستخدام نطاق التصنيف المشهدي SCL <span class="en">Cloud masking</span></div>
+      <div class="phase-step"><span class="step-num">6</span>توحيد قيم الانعكاس السطحي (القسمة على 10000) <span class="en">Reflectance scaling</span></div>
+      <div class="phase-step"><span class="step-num">7</span>بناء مركّب شهري لكل شهر في الموسم (وسيط المشاهد) <span class="en">Monthly median composite</span></div>
+    </div>
+  </div>
+  <div class="arrow">&#8595;</div>
+
+  <div class="phase-group phase-3">
+    <div class="phase-title">المرحلة الثالثة: توليد الميزات <span class="en">| Feature Engineering</span></div>
+    <div class="phase-steps">
+      <div class="phase-step"><span class="step-num">8</span>حساب المؤشرات: NDVI و NDWI و NDMI و EVI <span class="en">Spectral indices</span></div>
+      <div class="phase-step"><span class="step-num">9</span>سلسلة زمنية شهرية لكل مؤشر = البصمة الظاهرية للمحصول <span class="en">Phenology time series</span></div>
+      <div class="phase-step"><span class="step-num">10</span>إحصاءات موسمية: المئينات 10/50/90 + المتوسط + الانحراف المعياري <span class="en">Seasonal statistics</span></div>
+    </div>
+  </div>
+  <div class="arrow">&#8595;</div>
+
+  <div class="phase-group phase-4">
+    <div class="phase-title">المرحلة الرابعة: عينات التدريب والتصنيف <span class="en">| Sampling &amp; Classification</span></div>
+    <div class="phase-steps">
+      <div class="phase-step"><span class="step-num">11</span>إدخال العينات: رسم نقاط على الخريطة أو رفع ملف CSV / Table Asset <span class="en">User samples</span></div>
+      <div class="phase-step"><span class="step-num">12</span>تقسيم العينات عشوائيًا: 70% للتدريب و 30% للتحقق <span class="en">Train / validation split</span></div>
+      <div class="phase-step"><span class="step-num">13</span>تدريب 7 خوارزميات موجّهة (RF, SVM, CART, GTB, NB, MinDist, Mahalanobis) + KMeans غير موجّه <span class="en">7 supervised + KMeans</span></div>
+    </div>
+  </div>
+  <div class="arrow">&#8595;</div>
+
+  <div class="phase-group phase-5">
+    <div class="phase-title">المرحلة الخامسة: التقييم والمخرجات <span class="en">| Evaluation &amp; Outputs</span></div>
+    <div class="phase-steps">
+      <div class="phase-step"><span class="step-num">14</span>مصفوفة الخطأ + الدقة الكلية OA + معامل كابا Kappa لكل خوارزمية <span class="en">Confusion matrix</span></div>
+      <div class="phase-step"><span class="step-num">15</span>دقة المنتج PA ودقة المستخدم UA ودرجة F1 لكل فئة محصول <span class="en">Per-class accuracy</span></div>
+      <div class="phase-step"><span class="step-num">16</span>حساب المساحة بالهكتار لكل محصول وتصدير خريطة GeoTIFF بدقة 10 متر <span class="en">Area stats &amp; GeoTIFF</span></div>
+      <div class="phase-step"><span class="step-num">17</span>عرض النتائج ونشر المنصة كتطبيق ويب عام GEE App <span class="en">Publish as web app</span></div>
+    </div>
+  </div>
+
+  <div class="footer-note">12 فئة: قمح، ذرة، أرز، برسيم، بطاطس، بنجر السكر، فول، عباد الشمس، بساتين، بور، عمران، مياه</div>
+</div>
+</body>
+</html>

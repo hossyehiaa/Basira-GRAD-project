@@ -1,0 +1,102 @@
+// Basira — shared types
+
+export type Lang = "ar" | "en";
+export type SeasonKey = "winter" | "summer" | "full" | "custom";
+export type AlgoKey =
+  | "rf"
+  | "gtb"
+  | "svm"
+  | "cart"
+  | "nb"
+  | "mindist_e"
+  | "mindist_m"
+  | "kmeans";
+
+export interface CropClass {
+  id: number;
+  code: string;
+  en: string;
+  ar: string;
+  color: string;
+}
+
+export interface AlgorithmMeta {
+  key: AlgoKey;
+  en: string;
+  ar: string;
+  family: "supervised" | "unsupervised";
+  supervised: boolean;
+  demoOa: number; // demo-mode baseline overall accuracy
+  demoKappa: number;
+  noteEn: string;
+  noteAr: string;
+}
+
+export interface DemoClassRow {
+  classId: number;
+  code: string;
+  en: string;
+  ar: string;
+  color: string;
+  pixels?: number;
+  areaKm2: number;
+  percent: number;
+  pa: number | null;
+  ua: number | null;
+  f1: number | null;
+}
+
+export interface DemoRunResult {
+  oa: number;
+  kappa: number;
+  mapUrl: string;
+  classes: DemoClassRow[];
+}
+
+export interface DemoResults {
+  bounds: {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+    pxW: number;
+    pxH: number;
+    areaKm2: number;
+  };
+  seasons: Record<string, Record<string, DemoRunResult>>;
+}
+
+export interface RunPayload {
+  id?: number;
+  /** "live" = real Earth Engine run; "demo" = pre-computed showcase data */
+  mode?: "live" | "demo";
+  algorithm: AlgoKey;
+  season: SeasonKey;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  oa: number | null;
+  kappa: number | null;
+  mapUrl?: string | null;
+  classes: DemoClassRow[];
+  createdAt?: string;
+  nImages?: number;
+  durationMs?: number;
+  downloadUrl?: string | null;
+}
+
+export interface SamplePoint {
+  classId: number;
+  classEn: string;
+  classAr: string;
+  lon: number;
+  lat: number;
+}
+
+export interface SampleSetInfo {
+  id: number;
+  name: string;
+  source: string;
+  count: number;
+  createdAt: string;
+  points?: SamplePoint[];
+}
