@@ -161,8 +161,8 @@ export function geeErrorMessage(lang: "ar" | "en", code?: string): string {
       "No Sentinel-2 images for this period/area — try a longer period or a higher cloud limit.",
     ],
     too_few_samples: [
-      "العينات قليلة جدًا — أضف ٢٠ نقطة على الأقل (أو ارفع ملف CSV).",
-      "Too few samples — add at least 20 points (or upload a CSV).",
+      "العينات قليلة جدًا — الحد الأدنى ٢٠ نقطة، ويُنصح بـ ٣٠ نقطة لكل فئة على الأقل للحصول على نتائج موثوقة (ارسمها على الخريطة أو ارفع ملف CSV).",
+      "Too few samples — the minimum is 20 points; 30+ per class is recommended for reliable results (draw on the map or upload a CSV).",
     ],
     need_two_classes: [
       "أدخل عينات لفئتين مختلفتين على الأقل قبل التصنيف الموجّه.",
@@ -179,6 +179,14 @@ export function geeErrorMessage(lang: "ar" | "en", code?: string): string {
     gee_not_configured: [
       "مفتاح Google Earth Engine غير مُعد على الخادم — المنصة تعمل بالوضع التجريبي.",
       "The Google Earth Engine key is not configured server-side — running in demo mode.",
+    ],
+    mahalanobis_needs_samples: [
+      "خوارزمية «المسافة الدنيا — ماهالانوبيس» تحتاج عينات كثيرة لكل فئة (أكثر من عدد النطاقات الترددية ≈ ٣٠–٤٥ نقطة لكل فئة) لحساب مصفوفة التغاير — أضف المزيد من النقاط أو اختر خوارزمية أخرى.",
+      "The Mahalanobis minimum-distance algorithm needs many samples per class (more than the number of feature bands, roughly 30–45 points per class) to invert the covariance matrix — add more points or pick another algorithm.",
+    ],
+    all_algorithms_failed: [
+      "فشلت جميع الخوارزميات في التدريب على هذه العينات — تأكد أن النقاط داخل حدود منطقة الدراسة وموزعة على فئات مختلفة، ثم أعد المحاولة.",
+      "All algorithms failed to train on these samples — make sure the points are inside the study area and spread across different classes, then retry.",
     ],
     job_failed: [
       "تعذّر تنفيذ المهمة على خوادم جوجل — حاول مرة أخرى.",

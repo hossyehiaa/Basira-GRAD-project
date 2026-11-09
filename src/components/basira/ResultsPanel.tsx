@@ -157,6 +157,15 @@ export function ResultsPanel() {
         </div>
       </div>
 
+      {/* no-accuracy warning: supervised run with too few validation samples */}
+      {runResult.algorithm !== "kmeans" &&
+        (runResult.oa == null || (runResult.nVal != null && runResult.nVal < 10)) && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/60 bg-amber-500/10 p-3 text-[11px] font-bold leading-relaxed text-amber-700 dark:text-amber-400">
+          <span aria-hidden>⚠</span>
+          <span>{t(lang, "warnNoAcc")}</span>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Badge variant="secondary" className="gap-1 text-xs font-bold">
           {lang === "ar" ? ALGO_BY_KEY[runResult.algorithm]?.ar : ALGO_BY_KEY[runResult.algorithm]?.en}
@@ -317,6 +326,17 @@ export function ResultsPanel() {
               </span>
             )}
           </p>
+          {compareResults[0].nVal != null && (
+            <p className="mt-1 text-[11px] font-semibold text-muted-foreground">
+              {t(lang, "compareNVal").replace("{n}", String(compareResults[0].nVal))}
+            </p>
+          )}
+          {compareResults[0].nVal != null && compareResults[0].nVal < 30 && (
+            <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/60 bg-amber-500/10 p-2.5 text-[11px] font-bold leading-relaxed text-amber-700 dark:text-amber-400">
+              <span aria-hidden>⚠</span>
+              <span>{t(lang, "warnSmallVal")}</span>
+            </div>
+          )}
         </div>
       )}
 

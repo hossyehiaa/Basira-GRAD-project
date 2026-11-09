@@ -82,6 +82,8 @@ export interface RunPayload {
   nImages?: number;
   durationMs?: number;
   downloadUrl?: string | null;
+  /** number of validation samples behind the accuracy figures (compare flow) */
+  nVal?: number;
 }
 
 export interface SamplePoint {

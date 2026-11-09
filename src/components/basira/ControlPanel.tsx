@@ -116,7 +116,7 @@ export function ControlPanel() {
         store.setRunResult(run);
         toast({
           title: t(lang, "toastRunOk"),
-          description: `${t(lang, "metricOa")}: ${(run.oa * 100).toFixed(1)}%`,
+          description: `${t(lang, "metricOa")}: ${((run.oa ?? 0) * 100).toFixed(1)}%`,
         });
       }
     } catch (e) {
@@ -155,20 +155,32 @@ export function ControlPanel() {
         const byAlgo = new Map(res.summary.map((s: CompareSummaryRow) => [s.algorithm, s]));
         const rows: RunPayload[] = Array.from(byAlgo.entries()).map(([algo, s]) =>
           algo === best.algorithm
-            ? best
+            ? // keep the summary accuracy so the ranking/badge stay consistent
+              // even when the full run skipped accuracy (small validation set)
+              { ...best, oa: s.oa ?? best.oa, kappa: s.kappa ?? best.kappa, nVal: s.nVal }
             : {
                 mode: "live" as const,
                 algorithm: algo as AlgoKey,
                 season: store.season,
                 oa: s.oa,
                 kappa: s.kappa,
+                nVal: s.nVal,
                 classes: [],
               }
         );
-        rows.sort((a, b) => (b.oa ?? 0) - (a.oa ?? 0));
+        // the engine-declared best always stays on top, the rest by accuracy
+        rows.sort((a, b) => {
+          if (a.algorithm === best.algorithm) return -1;
+          if (b.algorithm === best.algorithm) return 1;
+          return (b.oa ?? -1) - (a.oa ?? -1);
+        });
         store.setCompareResults(rows);
         store.setRunResult(rows[0] ?? best);
-        toast({ title: t(lang, "toastCompareOk") });
+        const done = res.summary.filter((s: CompareSummaryRow) => s.oa != null).length;
+        toast({
+          title: t(lang, "toastCompareOk"),
+          description: t(lang, "compareDoneCount").replace("{n}", String(done)),
+        });
       } else {
         const results: RunPayload[] = [];
         for (const algo of ALGORITHMS) {

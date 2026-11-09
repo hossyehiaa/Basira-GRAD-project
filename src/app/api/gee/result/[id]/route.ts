@@ -19,7 +19,7 @@ export async function GET(
     const store = getStore("gee-results");
     const raw = await store.get(id);
     if (!raw) return NextResponse.json({ status: "pending" });
-    const data = JSON.parse(raw);
+    const data = JSON.parse(typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8"));
     if (data.status === "error") {
       return NextResponse.json({ status: "error", error: data.error, message: data.message });
     }

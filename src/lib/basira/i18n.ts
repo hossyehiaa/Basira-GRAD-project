@@ -151,6 +151,12 @@ export const STR_AR = {
   toastRunOk: "تم التصنيف بنجاح",
   toastRunErr: "تعذّر تشغيل التصنيف",
   toastCompareOk: "اكتملت المقارنة الشاملة",
+  compareDoneCount: "اكتملت {n} من ٧ خوارزميات — الخوارزميات التي فشلت تُهمل من الرسم",
+  compareNVal: "القياسات مبنية على {n} عينة تحقق (٧٠٪ تدريب / ٣٠٪ تحقق)",
+  warnSmallVal:
+    "مجموعة التحقق صغيرة — قيم الدقة استرشادية فقط وقد لا تعكس الأداء الفعلي. أضف المزيد من نقاط التدريب (٣٠+ لكل فئة) للحصول على مقارنة موثوقة.",
+  warnNoAcc:
+    "تنبيه: عينات التحقق أقل من ١٠ — لم تُحسب الدقة (OA/Kappa) والخريطة قد تكون غير موثوقة. أضف المزيد من نقاط التدريب (٣٠+ لكل فئة) ثم أعد التصنيف.",
   toastAoiOk: "تم تطبيق المنطقة الجديدة",
   toastAoiReset: "تمت العودة إلى برج العرب",
 } as const;
@@ -293,6 +299,12 @@ export const STR_EN: Record<StrKey, string> = {
   toastRunOk: "Classification completed",
   toastRunErr: "Classification failed",
   toastCompareOk: "Full comparison finished",
+  compareDoneCount: "{n} of 7 algorithms completed — failed ones are excluded from the chart",
+  compareNVal: "Figures are based on {n} validation samples (70% train / 30% validation)",
+  warnSmallVal:
+    "The validation set is small — accuracy values are indicative only and may not reflect real performance. Add more training points (30+ per class) for a reliable comparison.",
+  warnNoAcc:
+    "Warning: fewer than 10 validation samples — no accuracy (OA/Kappa) could be computed and the map may be unreliable. Add more training points (30+ per class) and re-run.",
   toastAoiOk: "New area applied",
   toastAoiReset: "Back to Borj El Arab",
 };

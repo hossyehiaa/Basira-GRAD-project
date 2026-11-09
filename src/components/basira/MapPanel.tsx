@@ -173,7 +173,7 @@ export default function MapPanel() {
           />
         )}
 
-        {activeGeo && (
+        {activeGeo ? (
           <GeoJSON
             key={aoi.isDefault ? "default" : `custom-${aoi.id}`}
             data={activeGeo as never}
@@ -184,7 +184,7 @@ export default function MapPanel() {
               dashArray: "6 4",
             }}
           />
-        )}
+        ) : null}
 
         {samplePoints.map((p, i) => (
           <CircleMarker
@@ -267,7 +267,12 @@ export default function MapPanel() {
         </button>
         {legendOpen && (
           <ul className="slim-scroll mt-2 grid max-h-64 grid-cols-1 gap-1 overflow-y-auto">
-            {CLASSES.map((c) => (
+            {/* show only the classes present in the current result (fallback: all) */}
+            {(runResult?.classes?.length
+              ? runResult.classes.filter((c, i, arr) =>
+                  arr.findIndex((x) => x.code === c.code) === i)
+              : CLASSES
+            ).map((c) => (
               <li key={c.code} className="flex items-center gap-2 text-[11px] font-semibold">
                 <span
                   className="size-3 shrink-0 rounded-sm border border-black/20"

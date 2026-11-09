@@ -375,6 +375,22 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     classified = feats.classify(classifier).clip(aoi);
     vis = { min: "1", max: "12", palette: PALETTE_CSV };
 
+    // Mahalanobis inverts a per-class covariance matrix over ~27-45 feature
+    // bands: if any class has fewer training pixels than bands it always
+    // fails server-side with an opaque error — pre-check and fail friendly.
+    if (input.algorithm === "mindist_m") {
+      const [hist, nBands] = await Promise.all([
+        p<Record<string, number>>((cb) => train.aggregate_histogram("class").getInfo(cb)),
+        p<number>((cb) => feats.bandNames().size().getInfo(cb)),
+      ]);
+      const counts = Object.values(hist || {});
+      const minCount = counts.length ? Math.min(...counts) : 0;
+      if (minCount <= nBands) {
+        throw new GEEError("mahalanobis_needs_samples",
+          `Mahalanobis needs more than ${nBands} training pixels per class (smallest class: ${minCount})`);
+      }
+    }
+
     if (nVal >= 10) {
       const cm = val.classify(classifier).errorMatrix("class", "classification");
       const acc = await p<any>((cb) => ee.Dictionary({
@@ -388,13 +404,22 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   }
 
   // tiles + area stats in parallel
-  const [mapId, areaRes] = await Promise.all([
-    p<any>((cb) => ee.data.getMapId({ image: classified, ...vis }, cb)),
-    p<any>((cb) => ee.Image.pixelArea().addBands(classified).reduceRegion({
-      reducer: ee.Reducer.sum().group({ groupField: 1, groupName: "class" }),
-      geometry: aoi, scale: 100, maxPixels: 1e13,
-    }).getInfo(cb)),
-  ]);
+  let mapId: any;
+  let areaRes: any;
+  try {
+    [mapId, areaRes] = await Promise.all([
+      p<any>((cb) => ee.data.getMapId({ image: classified, ...vis }, cb)),
+      p<any>((cb) => ee.Image.pixelArea().addBands(classified).reduceRegion({
+        reducer: ee.Reducer.sum().group({ groupField: 1, groupName: "class" }),
+        geometry: aoi, scale: 100, maxPixels: 1e13,
+      }).getInfo(cb)),
+    ]);
+  } catch (e) {
+    // map known server errors to friendly codes (e.g. singular covariance)
+    const msg = String((e as Error)?.message ?? e);
+    if (/covariance/i.test(msg)) throw new GEEError("mahalanobis_needs_samples", msg);
+    throw e;
+  }
 
   const groups: { class: number; sum: number }[] = areaRes.groups || [];
   const totalM2 = groups.reduce((s, g) => s + g.sum, 0);
@@ -486,16 +511,27 @@ export async function compareAll(input: PeriodInput & {
 
   const summary: CompareSummaryRow[] = [];
   for (const key of SUPERVISED_KEYS) {
-    const classifier = makeClassifier(key, rfTrees).train({
-      features: train, classProperty: "class", inputProperties: feats.bandNames(),
-    });
-    const cm = val.classify(classifier).errorMatrix("class", "classification");
-    const acc = await p<any>((cb) => ee.Dictionary({
-      oa: cm.accuracy(), kappa: cm.kappa(),
-    }).getInfo(cb));
-    summary.push({ algorithm: key, oa: Number(acc.oa), kappa: Number(acc.kappa), nVal: 0 });
+    try {
+      const classifier = makeClassifier(key, rfTrees).train({
+        features: train, classProperty: "class", inputProperties: feats.bandNames(),
+      });
+      const cm = val.classify(classifier).errorMatrix("class", "classification");
+      const acc = await p<any>((cb) => ee.Dictionary({
+        oa: cm.accuracy(), kappa: cm.kappa(),
+      }).getInfo(cb));
+      summary.push({ algorithm: key, oa: Number(acc.oa), kappa: Number(acc.kappa), nVal: 0 });
+    } catch (err) {
+      // one algorithm failing (e.g. Mahalanobis with few samples per class)
+      // must not kill the whole comparison — mark it as failed and continue.
+      console.error(`compareAll: algorithm ${key} failed:`,
+        String((err as Error)?.message ?? err).slice(0, 200));
+      summary.push({ algorithm: key, oa: null, kappa: null, nVal: 0 });
+    }
   }
-  summary.sort((a, b) => (b.oa ?? 0) - (a.oa ?? 0));
+  if (!summary.some((s) => s.oa != null)) {
+    throw new GEEError("all_algorithms_failed", "every supervised algorithm failed to train");
+  }
+  summary.sort((a, b) => (b.oa ?? -1) - (a.oa ?? -1));
   const best = await runClassification({ ...input, algorithm: summary[0].algorithm, kind: "run" });
   for (const row of summary) row.nVal = best.nVal;
   return { summary, best };
