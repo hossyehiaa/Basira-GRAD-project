@@ -64,6 +64,8 @@ export function UploadSection() {
   const lang = useBasira((s) => s.lang);
   const setSamples = useBasira((s) => s.setSamples);
   const setAoi = useBasira((s) => s.setAoi);
+  const resetAoi = useBasira((s) => s.resetAoi);
+  const triggerScanTour = useBasira((s) => s.triggerScanTour);
   const aoi = useBasira((s) => s.aoi);
   const { toast } = useToast();
   const [live, setLive] = useState<boolean | null>(null);
@@ -142,7 +144,10 @@ export function UploadSection() {
         nameAr: data.nameAr,
         geojson: data.geojson,
         isDefault: false,
+        areaKm2: data.areaKm2 ?? null,
+        bbox: data.bbox ?? null,
       });
+      triggerScanTour();
       setUploadState({ kind: "ok", msg: t(lang, "toastAoiOk") });
       toast({ title: t(lang, "toastAoiOk"), description: data.name });
     } catch {
@@ -235,13 +240,7 @@ export function UploadSection() {
                 size="sm"
                 className="font-bold"
                 onClick={() => {
-                  setAoi({
-                    id: null,
-                    name: "Borj El Arab",
-                    nameAr: "برج العرب",
-                    geojson: null,
-                    isDefault: true,
-                  });
+                  resetAoi();
                   toast({ title: t(lang, "toastAoiReset") });
                 }}
               >

@@ -8,12 +8,56 @@
  *
  * Cold Earth Engine computation graphs can take 30-120 s — far beyond the
  * 26 s synchronous function limit — so heavy jobs MUST run here.
+ *
+ * v1.3: custom AOI polygons pass through to the engine; finished runs are
+ * persisted to Neon PostGIS (best-effort, when DATABASE_URL is set).
  */
 import type { Config } from "@netlify/functions";
 import { getStore } from "@netlify/blobs";
-import { runClassification, compareAll, GEEError } from "../../src/lib/gee/engine";
+import { runClassification, compareAll, GEEError, type AoiGeoInput } from "../../src/lib/gee/engine";
+import { saveRun } from "../../src/lib/db";
 
-export default async (req: Request) => {
+function parseAoi(body: Record<string, unknown>): {
+  aoiGeo?: AoiGeoInput;
+  aoiName?: string;
+} {
+  const geo = body.aoiGeo as AoiGeoInput | undefined;
+  if (geo && (geo.type === "Polygon" || geo.type === "MultiPolygon")) {
+    return { aoiGeo: geo, aoiName: body.aoiName ? String(body.aoiName) : undefined };
+  }
+  return {};
+}
+
+async function persistRun(mode: "live" | "instant", result: {
+  algorithm: string; season: string; dateFrom: string; dateTo: string;
+  oa: number | null; kappa: number | null; classes: unknown[];
+  areaKm2: number; aoiName?: string | null;
+}) {
+  try {
+    await saveRun({
+      mode,
+      algorithm: result.algorithm,
+      season: result.season,
+      startDate: result.dateFrom,
+      endDate: result.dateTo,
+      durationDays: Math.max(
+        1,
+        Math.round(
+          (new Date(result.dateTo).getTime() - new Date(result.dateFrom).getTime()) / 86400000
+        )
+      ),
+      oa: result.oa,
+      kappa: result.kappa,
+      areaKm2: result.areaKm2,
+      classStats: result.classes,
+      aoiName: result.aoiName ?? null,
+    });
+  } catch {
+    /* storage must never break a successful run */
+  }
+}
+
+const handler = async (req: Request) => {
   const url = new URL(req.url);
   if (req.method !== "POST" || url.pathname.split("/").pop() !== "gee-run") {
     return new Response("Method not allowed", { status: 405 });
@@ -43,6 +87,7 @@ export default async (req: Request) => {
       mlpHidden: body.mlpHidden ? Number(body.mlpHidden) : undefined,
       mlpEpochs: body.mlpEpochs ? Number(body.mlpEpochs) : undefined,
       samplePoints: Array.isArray(body.samplePoints) ? body.samplePoints : [],
+      ...parseAoi(body),
     };
 
     let payload: unknown;
@@ -55,6 +100,7 @@ export default async (req: Request) => {
         algorithm: body.algorithm,
         kind: "run",
       });
+      await persistRun(result.algorithm === "signature" ? "instant" : "live", result);
       payload = { kind: "run", result };
     }
     await store.set(jobId, JSON.stringify({ status: "done", ...payload }));
@@ -77,3 +123,5 @@ export const config: Config = {
   background: true,
   path: "/gee-run",
 };
+
+export default handler;

@@ -1,6 +1,8 @@
 // Basira — training sample sets (CSV upload is parsed client-side)
+// v1.3: persisted to Neon PostGIS `training_samples` (PostGIS points via
+// ST_SetSRID(ST_MakePoint(lon, lat), 4326)); graceful fallback when unset.
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { saveSamples, getSql } from "@/lib/db";
 import { CLASSES as CLASSES_LIST, CLASS_BY_CODE } from "@/lib/basira/constants";
 
 interface RawPoint {
@@ -13,22 +15,19 @@ interface RawPoint {
 }
 
 export async function GET() {
-  // Serverless hosts have ephemeral storage — degrade to an empty list
-  // instead of a 500 so the workspace UI keeps working.
+  // Recent upload sets from Neon PostGIS (grouped); empty list when unset.
+  const sql = getSql();
+  if (!sql) return NextResponse.json({ sets: [] });
   try {
-    const sets = await db.sampleSet.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 10,
-    });
-    return NextResponse.json({
-      sets: sets.map((s) => ({
-        id: s.id,
-        name: s.name,
-        source: s.source,
-        count: (JSON.parse(s.points) as unknown[]).length,
-        createdAt: s.createdAt,
-      })),
-    });
+    const rows = await sql`
+      SELECT set_name AS name,
+             COUNT(*)::int AS count,
+             to_char(MAX(uploaded_at), 'YYYY-MM-DD HH24:MI') AS created_at
+      FROM training_samples
+      GROUP BY set_name
+      ORDER BY MAX(uploaded_at) DESC
+      LIMIT 10`;
+    return NextResponse.json({ sets: rows, connected: true });
   } catch {
     return NextResponse.json({ sets: [] });
   }
@@ -68,22 +67,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let persisted: { id: number; name: string } | null = null;
-    try {
-      const set = await db.sampleSet.create({
-        data: { name, source: "csv", points: JSON.stringify(points) },
-      });
-      persisted = { id: set.id, name: set.name };
-    } catch {
-      /* ephemeral storage — accept the upload for this session anyway */
-    }
+    // Neon PostGIS persistence (best-effort — upload succeeds regardless)
+    const saved = await saveSamples(
+      name,
+      points.map((p) => ({ classId: p.classId, classEn: p.classEn, lon: p.lon, lat: p.lat }))
+    );
     return NextResponse.json({
-      id: persisted?.id ?? null,
-      name: persisted?.name ?? name,
+      id: saved > 0 ? 1 : null,
+      name,
       count: points.length,
       skipped,
       points,
-      persisted: Boolean(persisted),
+      persisted: saved > 0,
     });
   } catch (e) {
     console.error("samples error", e);

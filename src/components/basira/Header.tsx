@@ -12,7 +12,7 @@ const SECTIONS = [
   { id: "workspace", key: "navWorkspace" },
   { id: "algorithms", key: "navAlgorithms" },
   { id: "upload", key: "navUpload" },
-  { id: "guide", key: "navGuide" },
+  { id: "methodology", key: "navMethodology" },
 ] as const;
 
 export function Header() {
@@ -37,7 +37,7 @@ export function Header() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <header className="glass sticky top-0 z-40 w-full !rounded-none border-x-0 border-t-0 bg-background/70 backdrop-blur-xl supports-[backdrop-filter]:bg-background/55">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-2 px-4">
         <a href="#home" className="flex items-center gap-2.5" aria-label="Basira home">
           <span className="flex flex-col leading-tight">
@@ -69,7 +69,7 @@ export function Header() {
             aria-label={lang === "ar" ? "English" : "العربية"}
             onClick={() => setLang(lang === "ar" ? "en" : "ar")}
           >
-            {lang === "ar" ? <Languages className="size-5" /> : <Languages className="size-5" />}
+            <Languages className="size-5" />
             <span className="ms-1 hidden text-xs font-bold sm:inline">{t(lang, "langBtn")}</span>
           </Button>
           <Button
@@ -81,7 +81,7 @@ export function Header() {
             <Sun className="hidden size-5 dark:block" />
             <Moon className="size-5 dark:hidden" />
           </Button>
-          <span className="hidden items-center gap-1 rounded-full bg-secondary px-3 py-1.5 text-xs font-bold text-secondary-foreground lg:flex">
+          <span className="hidden items-center gap-1 rounded-full bg-secondary px-3 py-1.5 font-mono text-xs font-bold text-secondary-foreground lg:flex">
             <Satellite className="size-3.5" />
             Sentinel-2 · 10m
           </span>

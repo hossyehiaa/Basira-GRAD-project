@@ -9,6 +9,10 @@ export interface AoiState {
   nameAr: string;
   geojson: unknown; // GeoJSON geometry object
   isDefault: boolean;
+  /** exact area in km² (client estimate; refined by PostGIS when available) */
+  areaKm2?: number | null;
+  /** bounding box {west, south, east, north} */
+  bbox?: { west: number; south: number; east: number; north: number } | null;
 }
 
 interface BasiraStore {
@@ -46,8 +50,21 @@ interface BasiraStore {
   drawClassId: number;
   setDrawClassId: (id: number) => void;
 
+  // rectangle area drawing ("select scan area on the map")
+  areaDrawMode: boolean;
+  setAreaDrawMode: (v: boolean) => void;
+
   aoi: AoiState;
   setAoi: (a: AoiState) => void;
+  resetAoi: () => void;
+
+  // a classification/scan job is executing (drives the radar animation)
+  isScanning: boolean;
+  setScanning: (v: boolean) => void;
+
+  // increments to trigger the space-to-field camera fly-in on the map
+  scanTourNonce: number;
+  triggerScanTour: () => void;
 
   runResult: RunPayload | null;
   setRunResult: (r: RunPayload | null) => void;
@@ -59,6 +76,16 @@ interface BasiraStore {
   setOverlayOpacity: (v: number) => void;
 }
 
+const DEFAULT_AOI: AoiState = {
+  id: null,
+  name: "Borj El Arab",
+  nameAr: "برج العرب",
+  geojson: null,
+  isDefault: true,
+  areaKm2: null,
+  bbox: null,
+};
+
 export const useBasira = create<BasiraStore>((set) => ({
   lang: "ar",
   setLang: (l) => set({ lang: l }),
@@ -69,9 +96,9 @@ export const useBasira = create<BasiraStore>((set) => ({
   dateTo: "2025-04-30",
   setDate: (from, to) => set({ dateFrom: from, dateTo: to }),
 
-  // kmeans by default: unsupervised, runs live with zero training samples.
+  // signature (instant scan) by default: works immediately with zero samples.
   // Supervised algorithms become available once samples are drawn/uploaded.
-  algorithm: "kmeans",
+  algorithm: "signature",
   setAlgorithm: (a) => set({ algorithm: a }),
   rfTrees: 100,
   setRfTrees: (n) => set({ rfTrees: n }),
@@ -100,14 +127,18 @@ export const useBasira = create<BasiraStore>((set) => ({
   drawClassId: 1,
   setDrawClassId: (id) => set({ drawClassId: id }),
 
-  aoi: {
-    id: null,
-    name: "Borj El Arab",
-    nameAr: "برج العرب",
-    geojson: null,
-    isDefault: true,
-  },
+  areaDrawMode: false,
+  setAreaDrawMode: (v) => set({ areaDrawMode: v }),
+
+  aoi: DEFAULT_AOI,
   setAoi: (a) => set({ aoi: a }),
+  resetAoi: () => set({ aoi: DEFAULT_AOI, scanTourNonce: Date.now() }),
+
+  isScanning: false,
+  setScanning: (v) => set({ isScanning: v }),
+
+  scanTourNonce: 0,
+  triggerScanTour: () => set({ scanTourNonce: Date.now() }),
 
   runResult: null,
   setRunResult: (r) => set({ runResult: r }),

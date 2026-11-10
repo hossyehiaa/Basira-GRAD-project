@@ -1,9 +1,10 @@
 "use client";
-// Workspace control panel: AOI, season/period, algorithm, params, run/compare.
+// Workspace control panel: AOI (draw + direct coordinates), season/duration,
+// algorithm, params, run/compare.
 // Live mode (GEE key configured) submits real Earth Engine jobs — heavy ones
 // through the background function — falling back to the demo engine otherwise.
-import { useState } from "react";
-import { Play, Swords, Loader2, MapPinned } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Play, Swords, Loader2, MapPinned, Crosshair, RotateCcw, PenLine, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -19,224 +20,152 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { useBasira } from "@/lib/basira/store";
+import { useScanRunner } from "@/hooks/use-scan";
+import { useBasira, type AoiState } from "@/lib/basira/store";
 import { t } from "@/lib/basira/i18n";
-import { ALGORITHMS } from "@/lib/basira/constants";
+import { ALGORITHMS, SIGNATURE_ALGO } from "@/lib/basira/constants";
+import { FEDDAN_PER_KM2 as FEDDAN } from "@/lib/basira/agronomy";
 import {
-  getGeeHealth,
-  geeErrorMessage,
-  submitGeeJob,
-} from "@/lib/gee/client";
-import type { RunResult, CompareSummaryRow } from "@/lib/gee/engineTypes";
-import type { AlgoKey, RunPayload, SeasonKey } from "@/lib/basira/types";
+  circleRing,
+  bboxRing,
+  bboxOfRing,
+  validateScanArea,
+  type LonLat,
+} from "@/lib/basira/geo";
+import type { AlgoKey, SeasonKey } from "@/lib/basira/types";
 
-/** Map a live engine result to the store payload shape. */
-export function liveToPayload(r: RunResult): RunPayload {
-  return {
-    mode: "live",
-    algorithm: r.algorithm,
-    season: r.season,
-    dateFrom: r.dateFrom,
-    dateTo: r.dateTo,
-    oa: r.oa,
-    kappa: r.kappa,
-    mapUrl: r.tileUrl,
-    classes: r.classes.map((c) => ({
-      classId: c.classId,
-      code: c.code,
-      en: c.en,
-      ar: c.ar,
-      color: c.color,
-      areaKm2: c.areaKm2,
-      percent: c.percent,
-      pa: c.pa,
-      ua: c.ua,
-      f1: c.f1,
-    })),
-    confusion: r.confusion ?? null,
-    nImages: r.nImages,
-    durationMs: r.durationMs,
-    downloadUrl: r.downloadUrl,
-  };
-}
+const num = (v: string) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+};
 
 export function ControlPanel() {
   const lang = useBasira((s) => s.lang);
   const store = useBasira();
   const { toast } = useToast();
-  const [busy, setBusy] = useState<"run" | "compare" | null>(null);
-  const [phase, setPhase] = useState<"submitted" | "running" | null>(null);
+  const { busy, phase, runOne, compareAll } = useScanRunner();
+
+  /* ---------------- coordinate input widget state ---------------- */
+  const [coordMode, setCoordMode] = useState<"center" | "bbox">("center");
+  const [cLat, setCLat] = useState("30.90");
+  const [cLon, setCLon] = useState("29.60");
+  const [cRadiusKm, setCRadiusKm] = useState("1.33"); // ≈ 500 feddans
+  const [bboxN, setBboxN] = useState("30.90");
+  const [bboxS, setBboxS] = useState("30.80");
+  const [bboxE, setBboxE] = useState("29.65");
+  const [bboxW, setBboxW] = useState("29.50");
+  const [coordErr, setCoordErr] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
+
+  /* ---------------- duration selector state ---------------- */
+  const [customDays, setCustomDays] = useState("120");
 
   // custom-range validation: end date must be strictly after the start date
   const customInvalid =
     store.season === "custom" &&
     (!store.dateFrom || !store.dateTo || store.dateFrom >= store.dateTo);
 
-  /** After a full comparison, scroll the results comparison block into view. */
-  const scrollToCompare = () => {
-    setTimeout(() => {
-      document
-        .getElementById("compare-block")
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 180);
-  };
+  /** Build the candidate polygon for the current coordinate inputs. */
+  const candidateRing = useMemo<LonLat[] | null>(() => {
+    if (coordMode === "center") {
+      const lat = num(cLat), lon = num(cLon), r = num(cRadiusKm);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(r) || r <= 0) return null;
+      return circleRing(lon, lat, r);
+    }
+    const n = num(bboxN), s = num(bboxS), e = num(bboxE), w = num(bboxW);
+    if (![n, s, e, w].every(Number.isFinite) || n <= s || e <= w) return null;
+    return bboxRing(w, s, e, n);
+  }, [coordMode, cLat, cLon, cRadiusKm, bboxN, bboxS, bboxE, bboxW]);
 
-  async function runOne() {
-    setBusy("run");
-    setPhase(null);
-    store.setCompareResults(null);
+  const candidateAreaKm2 = useMemo(
+    () => (candidateRing ? validateScanArea(candidateRing) : null),
+    [candidateRing]
+  );
+
+  /** Resolved period in days/months for the live duration badge. */
+  const durationBadge = useMemo(() => {
+    let days = 0;
+    if (store.season === "custom") {
+      if (!store.dateFrom || !store.dateTo || store.dateFrom >= store.dateTo) return null;
+      days =
+        Math.round(
+          (new Date(store.dateTo).getTime() - new Date(store.dateFrom).getTime()) / 86400000
+        ) + 1;
+    } else if (store.season === "winter") days = 181;
+    else if (store.season === "summer") days = 184;
+    else days = 365;
+    const months = Math.max(1, Math.round(days / 30.44));
+    return t(lang, "durationBadge")
+      .replace("{d}", String(days))
+      .replace("{m}", String(months));
+  }, [store.season, store.dateFrom, store.dateTo, lang]);
+
+  /** Apply the typed coordinates: build the polygon, persist to PostGIS,
+   *  fly the map there, then run the instant scan immediately. */
+  async function applyCoordinatesAndScan() {
+    setCoordErr(null);
+    if (!candidateRing) {
+      setCoordErr(t(lang, "coordErrValues"));
+      return;
+    }
+    const check = validateScanArea(candidateRing);
+    if (!check.ok) {
+      setCoordErr(t(lang, check.reason === "outside" ? "coordErrOutside" : check.reason === "size" ? "coordErrSize" : "coordErrValues"));
+      return;
+    }
+    setApplying(true);
     try {
-      const health = await getGeeHealth();
-      if (health.mode === "live") {
-        const res = await submitGeeJob(
-          {
-            kind: "run",
-            algorithm: store.algorithm,
-            season: store.season,
-            dateFrom: store.season === "custom" ? store.dateFrom : undefined,
-            dateTo: store.season === "custom" ? store.dateTo : undefined,
-            rfTrees: store.rfTrees,
-            kClusters: store.kClusters,
-            knnK: store.knnK,
-            mlpHidden: store.mlpHidden,
-            mlpEpochs: store.mlpEpochs,
-            samplePoints: store.samplePoints,
-          },
-          setPhase
-        );
-        if (res.kind !== "run") throw new Error("bad_kind");
-        const run = liveToPayload(res.result);
-        store.setRunResult(run);
-        toast({
-          title: t(lang, "toastRunOk"),
-          description:
-            run.oa == null
-              ? `${t(lang, "metricImages")}: ${run.nImages ?? "—"}`
-              : `${t(lang, "metricOa")}: ${(run.oa * 100).toFixed(1)}% · ${t(lang, "metricImages")}: ${run.nImages ?? "—"}`,
-        });
-      } else {
-        const res = await fetch("/api/runs", {
+      const bbox = bboxOfRing(candidateRing);
+      const name =
+        coordMode === "center"
+          ? `${(+cLat).toFixed(3)}°N ${(+cLon).toFixed(3)}°E · r=${(+cRadiusKm).toFixed(2)}km`
+          : `BBox ${bbox.west.toFixed(3)}–${bbox.east.toFixed(3)}E / ${bbox.south.toFixed(3)}–${bbox.north.toFixed(3)}N`;
+      const geojson = { type: "Polygon" as const, coordinates: [candidateRing] };
+
+      // best-effort PostGIS persistence + exact ST_Area (non-blocking on failure)
+      let areaKm2 = check.areaKm2;
+      let id: number | null = null;
+      try {
+        const res = await fetch("/api/aoi", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            algorithm: store.algorithm,
-            season: store.season,
-            dateFrom: store.season === "custom" ? store.dateFrom : undefined,
-            dateTo: store.season === "custom" ? store.dateTo : undefined,
-            rfTrees: store.rfTrees,
-            kClusters: store.kClusters,
-            sampleSetId: store.sampleSetId,
-            aoiId: store.aoi.id,
-          }),
+          body: JSON.stringify({ name, geojson, areaKm2 }),
         });
-        if (!res.ok) throw new Error("run failed");
-        const run: RunPayload = await res.json();
-        store.setRunResult(run);
-        toast({
-          title: t(lang, "toastRunOk"),
-          description: `${t(lang, "metricOa")}: ${((run.oa ?? 0) * 100).toFixed(1)}%`,
-        });
+        if (res.ok) {
+          const d = await res.json();
+          if (typeof d.areaKm2 === "number") areaKm2 = d.areaKm2;
+          id = d.id ?? null;
+        }
+      } catch {
+        /* offline/demo — the client estimate is enough */
       }
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      toast({
-        variant: "destructive",
-        title: t(lang, "toastRunErr"),
-        description: geeErrorMessage(lang, code),
-      });
+
+      const aoi: AoiState = {
+        id,
+        name,
+        nameAr: name,
+        geojson,
+        isDefault: false,
+        areaKm2,
+        bbox,
+      };
+      store.setAoi(aoi);
+      store.triggerScanTour(); // space-to-field camera dive
+      toast({ title: t(lang, "aoiDrawnToast") });
+      // immediate real-time scan of the selected area
+      await runOne("signature");
     } finally {
-      setBusy(null);
-      setPhase(null);
+      setApplying(false);
     }
   }
 
-  async function compareAll() {
-    setBusy("compare");
-    setPhase(null);
-    try {
-      const health = await getGeeHealth();
-      if (health.mode === "live") {
-        const res = await submitGeeJob(
-          {
-            kind: "compare",
-            season: store.season,
-            dateFrom: store.season === "custom" ? store.dateFrom : undefined,
-            dateTo: store.season === "custom" ? store.dateTo : undefined,
-            rfTrees: store.rfTrees,
-            kClusters: store.kClusters,
-            knnK: store.knnK,
-            mlpHidden: store.mlpHidden,
-            mlpEpochs: store.mlpEpochs,
-            samplePoints: store.samplePoints,
-          },
-          setPhase
-        );
-        if (res.kind !== "compare") throw new Error("bad_kind");
-        const best = liveToPayload(res.best);
-        const byAlgo = new Map(res.summary.map((s: CompareSummaryRow) => [s.algorithm, s]));
-        const rows: RunPayload[] = Array.from(byAlgo.entries()).map(([algo, s]) =>
-          algo === best.algorithm
-            ? // keep the summary accuracy so the ranking/badge stay consistent
-              // even when the full run skipped accuracy (small validation set)
-              { ...best, oa: s.oa ?? best.oa, kappa: s.kappa ?? best.kappa, nVal: s.nVal }
-            : {
-                mode: "live" as const,
-                algorithm: algo as AlgoKey,
-                season: store.season,
-                oa: s.oa,
-                kappa: s.kappa,
-                nVal: s.nVal,
-                classes: [],
-              }
-        );
-        // the engine-declared best always stays on top, the rest by accuracy
-        rows.sort((a, b) => {
-          if (a.algorithm === best.algorithm) return -1;
-          if (b.algorithm === best.algorithm) return 1;
-          return (b.oa ?? -1) - (a.oa ?? -1);
-        });
-        store.setCompareResults(rows);
-        store.setRunResult(rows[0] ?? best);
-        const done = res.summary.filter((s: CompareSummaryRow) => s.oa != null).length;
-        toast({
-          title: t(lang, "toastCompareOk"),
-          description: t(lang, "compareDoneCount")
-            .replace("{n}", String(done))
-            .replace("{total}", String(res.summary.length)),
-        });
-        scrollToCompare();
-      } else {
-        const results: RunPayload[] = [];
-        for (const algo of ALGORITHMS) {
-          const res = await fetch("/api/runs", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              algorithm: algo.key,
-              season: store.season,
-              dateFrom: store.season === "custom" ? store.dateFrom : undefined,
-              dateTo: store.season === "custom" ? store.dateTo : undefined,
-            }),
-          });
-          if (res.ok) results.push(await res.json());
-        }
-        results.sort((a, b) => (b.oa ?? 0) - (a.oa ?? 0));
-        store.setCompareResults(results);
-        if (results[0]) store.setRunResult(results[0]);
-        toast({ title: t(lang, "toastCompareOk") });
-        scrollToCompare();
-      }
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      toast({
-        variant: "destructive",
-        title: t(lang, "toastRunErr"),
-        description: geeErrorMessage(lang, code),
-      });
-    } finally {
-      setBusy(null);
-      setPhase(null);
-    }
+  /** Quick duration presets — computed from today. */
+  function applyPreset(days: number) {
+    const to = new Date();
+    const from = new Date(to.getTime() - (days - 1) * 86400000);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    store.setSeason("custom");
+    store.setDate(iso(from), iso(to));
   }
 
   const seasons: { key: SeasonKey; label: string }[] = [
@@ -246,10 +175,13 @@ export function ControlPanel() {
     { key: "custom", label: t(lang, "seasonCustom") },
   ];
 
+  const runLabel =
+    store.algorithm === "signature" ? t(lang, "btnRunScan") : t(lang, "btnRun");
+
   return (
     <div className="flex flex-col gap-5">
-      {/* AOI */}
-      <section className="rounded-xl border bg-card p-4">
+      {/* ---------------- AOI: draw + direct coordinates ---------------- */}
+      <section className="glass rounded-xl p-4">
         <h3 className="mb-2 flex items-center gap-2 text-sm font-extrabold">
           <MapPinned className="size-4 text-primary" />
           {t(lang, "ctrlAoi")}
@@ -257,15 +189,175 @@ export function ControlPanel() {
         <p className="text-sm font-bold text-primary">
           {store.aoi.isDefault
             ? t(lang, "aoiCurrent")
-            : `${t(lang, "aoiCustom")}: ${lang === "ar" ? store.aoi.nameAr : store.aoi.name}`}
+            : `${t(lang, "aoiCustom")}: ${store.aoi.name}`}
         </p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          {t(lang, "aoiNote")}
-        </p>
+        {!store.aoi.isDefault && store.aoi.areaKm2 != null && (
+          <p className="mt-1 font-mono text-xs font-semibold text-muted-foreground">
+            {t(lang, "aoiAreaLabel")}: {store.aoi.areaKm2.toFixed(2)} {t(lang, "km2Unit")} ·{" "}
+            {Math.round(store.aoi.areaKm2 * FEDDAN).toLocaleString("en-US")}{" "}
+            {t(lang, "feddanUnit")}
+          </p>
+        )}
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(lang, "aoiNote")}</p>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant={store.areaDrawMode ? "default" : "outline"}
+            className="h-8 gap-1.5 px-3 text-xs font-bold"
+            onClick={() => {
+              store.setAreaDrawMode(!store.areaDrawMode);
+              if (!store.areaDrawMode) store.setDrawMode(false);
+            }}
+            title={t(lang, "aoiDrawHint")}
+          >
+            <PenLine className="size-3.5" />
+            {t(lang, "aoiDrawToggle")}
+          </Button>
+          {!store.aoi.isDefault && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 gap-1.5 px-3 text-xs font-bold"
+              onClick={() => {
+                store.resetAoi();
+                toast({ title: t(lang, "toastAoiReset") });
+              }}
+            >
+              <RotateCcw className="size-3.5" />
+              {t(lang, "aoiResetBtn")}
+            </Button>
+          )}
+        </div>
+        {store.areaDrawMode && (
+          <p className="mt-2 rounded-lg border border-primary/40 bg-primary/10 p-2 text-[11px] font-semibold leading-relaxed text-primary">
+            {t(lang, "aoiDrawHint")}
+          </p>
+        )}
+
+        {/* ---- direct coordinate & area input ---- */}
+        <div className="mt-4 rounded-xl border bg-muted/40 p-3">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground">
+            <Crosshair className="size-3.5 text-primary" />
+            {t(lang, "coordTitle")}
+          </p>
+          <div className="mb-3 grid grid-cols-2 gap-1.5">
+            <Button
+              size="sm"
+              variant={coordMode === "center" ? "default" : "outline"}
+              className="h-7 text-[11px] font-bold"
+              onClick={() => setCoordMode("center")}
+            >
+              {t(lang, "coordModeCenter")}
+            </Button>
+            <Button
+              size="sm"
+              variant={coordMode === "bbox" ? "default" : "outline"}
+              className="h-7 text-[11px] font-bold"
+              onClick={() => setCoordMode("bbox")}
+            >
+              {t(lang, "coordModeBbox")}
+            </Button>
+          </div>
+
+          {coordMode === "center" ? (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordLat")}</Label>
+                <Input
+                  dir="ltr"
+                  inputMode="decimal"
+                  value={cLat}
+                  onChange={(e) => setCLat(e.target.value)}
+                  className="mt-1 h-8 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordLon")}</Label>
+                <Input
+                  dir="ltr"
+                  inputMode="decimal"
+                  value={cLon}
+                  onChange={(e) => setCLon(e.target.value)}
+                  className="mt-1 h-8 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordRadiusKm")}</Label>
+                <Input
+                  dir="ltr"
+                  inputMode="decimal"
+                  value={cRadiusKm}
+                  onChange={(e) => setCRadiusKm(e.target.value)}
+                  className="mt-1 h-8 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordAreaFeddans")}</Label>
+                <Input
+                  dir="ltr"
+                  inputMode="decimal"
+                  value={
+                    Number.isFinite(num(cRadiusKm)) && num(cRadiusKm) > 0
+                      ? Math.round(Math.PI * num(cRadiusKm) ** 2 * FEDDAN).toLocaleString("en-US")
+                      : "—"
+                  }
+                  readOnly
+                  className="mt-1 h-8 bg-muted font-mono text-xs text-muted-foreground"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordNorth")}</Label>
+                <Input dir="ltr" inputMode="decimal" value={bboxN} onChange={(e) => setBboxN(e.target.value)} className="mt-1 h-8 font-mono text-xs" />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordSouth")}</Label>
+                <Input dir="ltr" inputMode="decimal" value={bboxS} onChange={(e) => setBboxS(e.target.value)} className="mt-1 h-8 font-mono text-xs" />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordEast")}</Label>
+                <Input dir="ltr" inputMode="decimal" value={bboxE} onChange={(e) => setBboxE(e.target.value)} className="mt-1 h-8 font-mono text-xs" />
+              </div>
+              <div>
+                <Label className="text-[10px] text-muted-foreground">{t(lang, "coordWest")}</Label>
+                <Input dir="ltr" inputMode="decimal" value={bboxW} onChange={(e) => setBboxW(e.target.value)} className="mt-1 h-8 font-mono text-xs" />
+              </div>
+            </div>
+          )}
+
+          {candidateAreaKm2?.ok && (
+            <p className="mt-2 font-mono text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+              {t(lang, "aoiAreaLabel")}: {candidateAreaKm2.areaKm2.toFixed(2)} {t(lang, "km2Unit")} ·{" "}
+              {Math.round(candidateAreaKm2.areaKm2 * FEDDAN).toLocaleString("en-US")} {t(lang, "feddanUnit")}
+            </p>
+          )}
+          {coordErr && (
+            <p className="mt-2 rounded-lg border border-destructive/50 bg-destructive/10 p-2 text-[11px] font-bold leading-relaxed text-destructive">
+              {coordErr}
+            </p>
+          )}
+
+          <Button
+            size="sm"
+            className="mt-3 w-full gap-1.5 text-xs font-extrabold"
+            onClick={applyCoordinatesAndScan}
+            disabled={applying || busy !== null}
+          >
+            {applying || busy === "run" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Crosshair className="size-3.5" />
+            )}
+            {t(lang, "coordApplyScan")}
+          </Button>
+        </div>
       </section>
 
-      {/* Season */}
-      <section className="rounded-xl border bg-card p-4">
+      {/* ---------------- Season + duration ---------------- */}
+      <section className="glass rounded-xl p-4">
         <h3 className="mb-3 text-sm font-extrabold">{t(lang, "ctrlSeason")}</h3>
         <RadioGroup
           value={store.season}
@@ -283,8 +375,11 @@ export function ControlPanel() {
             </Label>
           ))}
         </RadioGroup>
+
         {store.season === "custom" && (
           <>
+            {/* date range — LTR inputs so dd/mm/yyyy renders consistently in
+                both RTL & LTR; dark color-scheme keeps the picker dark */}
             <div className="mt-3 grid grid-cols-2 gap-2">
               <div>
                 <Label htmlFor="dateFrom" className="text-xs text-muted-foreground">
@@ -293,9 +388,10 @@ export function ControlPanel() {
                 <Input
                   id="dateFrom"
                   type="date"
+                  dir="ltr"
                   value={store.dateFrom}
                   onChange={(e) => store.setDate(e.target.value, store.dateTo)}
-                  className="mt-1"
+                  className="mt-1 font-mono text-xs dark:[color-scheme:dark]"
                 />
               </div>
               <div>
@@ -305,9 +401,10 @@ export function ControlPanel() {
                 <Input
                   id="dateTo"
                   type="date"
+                  dir="ltr"
                   value={store.dateTo}
                   onChange={(e) => store.setDate(store.dateFrom, e.target.value)}
-                  className="mt-1"
+                  className="mt-1 font-mono text-xs dark:[color-scheme:dark]"
                 />
               </div>
             </div>
@@ -322,10 +419,65 @@ export function ControlPanel() {
             )}
           </>
         )}
+
+        {/* ---- flexible duration selector ---- */}
+        <div className="mt-4 rounded-xl border bg-muted/40 p-3">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground">
+            <CalendarClock className="size-3.5 text-primary" />
+            {t(lang, "durationTitle")}
+          </p>
+          <div className="grid grid-cols-3 gap-1.5">
+            {(
+              [
+                [30, "durPreset30"],
+                [60, "durPreset60"],
+                [90, "durPreset90"],
+                [180, "durPreset180"],
+                [365, "durPreset365"],
+              ] as const
+            ).map(([days, key]) => (
+              <Button
+                key={days}
+                size="sm"
+                variant="outline"
+                className="h-7 px-1 text-[10px] font-bold"
+                onClick={() => applyPreset(days)}
+              >
+                {t(lang, key)}
+              </Button>
+            ))}
+            <div className="col-span-3 flex items-center gap-1.5">
+              <Input
+                dir="ltr"
+                inputMode="numeric"
+                value={customDays}
+                onChange={(e) => setCustomDays(e.target.value)}
+                className="h-7 w-20 font-mono text-[11px]"
+                aria-label={t(lang, "durCustomDays")}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 flex-1 text-[10px] font-bold"
+                disabled={!Number.isFinite(num(customDays)) || num(customDays) < 2 || num(customDays) > 3650}
+                onClick={() => applyPreset(Math.round(num(customDays)))}
+              >
+                {t(lang, "durCustomApply")}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {durationBadge && (
+          <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[11px] font-bold text-primary">
+            <CalendarClock className="size-3" />
+            {durationBadge}
+          </p>
+        )}
       </section>
 
-      {/* Algorithm */}
-      <section className="rounded-xl border bg-card p-4">
+      {/* ---------------- Algorithm ---------------- */}
+      <section className="glass rounded-xl p-4">
         <h3 className="mb-3 text-sm font-extrabold">{t(lang, "ctrlAlgo")}</h3>
         <Select
           value={store.algorithm}
@@ -335,6 +487,12 @@ export function ControlPanel() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectGroup>
+              <SelectLabel>{t(lang, "algoFamilyInstant")}</SelectLabel>
+              <SelectItem value={SIGNATURE_ALGO.key} className="font-semibold">
+                {lang === "ar" ? SIGNATURE_ALGO.ar : SIGNATURE_ALGO.en}
+              </SelectItem>
+            </SelectGroup>
             <SelectGroup>
               <SelectLabel>{t(lang, "algoFamilySup")}</SelectLabel>
               {ALGORITHMS.filter((a) => a.supervised).map((a) => (
@@ -354,6 +512,11 @@ export function ControlPanel() {
           </SelectContent>
         </Select>
 
+        {store.algorithm === "signature" && (
+          <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 p-2 text-[11px] font-semibold leading-relaxed text-primary">
+            {t(lang, "instantScanNote")}
+          </p>
+        )}
         {store.algorithm === "kmeans" && (
           <p className="mt-2 rounded-lg bg-muted p-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
             {t(lang, "kmeansInfo")}
@@ -367,7 +530,7 @@ export function ControlPanel() {
           {store.algorithm === "rf" && (
             <div>
               <Label htmlFor="rf-trees" className="text-xs">
-                {t(lang, "lblTrees")}: <span className="font-extrabold tabular-nums">{store.rfTrees}</span>
+                {t(lang, "lblTrees")}: <span className="font-mono font-extrabold tabular-nums">{store.rfTrees}</span>
               </Label>
               <Slider
                 id="rf-trees"
@@ -383,7 +546,7 @@ export function ControlPanel() {
           {store.algorithm === "kmeans" && (
             <div>
               <Label htmlFor="k-clusters" className="text-xs">
-                {t(lang, "lblK")}: <span className="font-extrabold tabular-nums">{store.kClusters}</span>
+                {t(lang, "lblK")}: <span className="font-mono font-extrabold tabular-nums">{store.kClusters}</span>
               </Label>
               <Slider
                 id="k-clusters"
@@ -399,7 +562,7 @@ export function ControlPanel() {
           {store.algorithm === "knn" && (
             <div>
               <Label htmlFor="knn-k" className="text-xs">
-                {t(lang, "lblKnnK")}: <span className="font-extrabold tabular-nums">{store.knnK}</span>
+                {t(lang, "lblKnnK")}: <span className="font-mono font-extrabold tabular-nums">{store.knnK}</span>
               </Label>
               <Slider
                 id="knn-k"
@@ -422,7 +585,7 @@ export function ControlPanel() {
               <div>
                 <Label htmlFor="mlp-hidden" className="text-xs">
                   {t(lang, "lblMlpHidden")}:{" "}
-                  <span className="font-extrabold tabular-nums">{store.mlpHidden}</span>
+                  <span className="font-mono font-extrabold tabular-nums">{store.mlpHidden}</span>
                 </Label>
                 <Slider
                   id="mlp-hidden"
@@ -437,7 +600,7 @@ export function ControlPanel() {
               <div>
                 <Label htmlFor="mlp-epochs" className="text-xs">
                   {t(lang, "lblMlpEpochs")}:{" "}
-                  <span className="font-extrabold tabular-nums">{store.mlpEpochs}</span>
+                  <span className="font-mono font-extrabold tabular-nums">{store.mlpEpochs}</span>
                 </Label>
                 <Slider
                   id="mlp-epochs"
@@ -454,7 +617,7 @@ export function ControlPanel() {
               </p>
             </div>
           )}
-          {!["rf", "kmeans", "knn", "mlp"].includes(store.algorithm) && (
+          {!["rf", "kmeans", "knn", "mlp", "signature"].includes(store.algorithm) && (
             <p className="text-xs text-muted-foreground">
               {lang === "ar"
                 ? "هذه الخوارزمية تعمل بالمعاملات الافتراضية المُثبّتة في المحرك."
@@ -475,20 +638,22 @@ export function ControlPanel() {
         </div>
       </section>
 
-      {/* Actions */}
+      {/* ---------------- Actions ---------------- */}
       <div className="flex flex-col gap-2">
         <Button
           size="lg"
           className="text-base font-extrabold"
-          onClick={runOne}
+          onClick={() => runOne()}
           disabled={busy !== null || customInvalid}
         >
           {busy === "run" ? <Loader2 className="size-5 animate-spin" /> : <Play className="size-5" />}
           {busy === "run"
             ? phase
               ? t(lang, phase === "submitted" ? "jobQueued" : "jobRunning")
-              : t(lang, "running")
-            : t(lang, "btnRun")}
+              : store.algorithm === "signature"
+                ? t(lang, "scanning")
+                : t(lang, "running")
+            : runLabel}
         </Button>
         <Button
           size="lg"

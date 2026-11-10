@@ -1,6 +1,7 @@
 "use client";
 // Basira — interactive map (Leaflet): satellite basemap, AOI boundary,
-// classification overlay, sample points, legend, opacity control,
+// classification overlay, sample points, rectangle scan-area drawing,
+// orbital radar animation while scanning, legend, opacity control,
 // A/B split-view comparison with a draggable divider.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ImageOverlay as LImageOverlay, TileLayer as LTileLayer } from "leaflet";
@@ -11,6 +12,7 @@ import {
   ImageOverlay,
   CircleMarker,
   LayersControl,
+  Rectangle,
   useMap,
   useMapEvents,
 } from "react-leaflet";
@@ -24,6 +26,7 @@ import {
   Columns2,
   Loader2,
   ChevronsLeftRight,
+  Radar,
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
@@ -36,8 +39,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useBasira } from "@/lib/basira/store";
+import { useToast } from "@/hooks/use-toast";
+import { useScanRunner, liveToPayload } from "@/hooks/use-scan";
+import { useBasira, type AoiState } from "@/lib/basira/store";
 import { t } from "@/lib/basira/i18n";
+import { validateScanArea, bboxOfRing, type LonLat } from "@/lib/basira/geo";
 import {
   ALGORITHMS,
   ALGO_BY_KEY,
@@ -46,8 +52,7 @@ import {
   CLASSES,
   ESRI_ATTRIBUTION,
 } from "@/lib/basira/constants";
-import { getGeeHealth, submitGeeJob } from "@/lib/gee/client";
-import { liveToPayload } from "./ControlPanel";
+import { getGeeHealth, submitGeeJob, type AoiGeoPayload } from "@/lib/gee/client";
 import type { AlgoKey, RunPayload, SeasonKey } from "@/lib/basira/types";
 
 function getBounds(geo: unknown): [[number, number], [number, number]] | null {
@@ -93,6 +98,30 @@ function FitAoi({ bounds }: { bounds: [[number, number], [number, number]] | nul
   return null;
 }
 
+/** Space-to-field camera tour: jump out to an orbital view, then dive into
+ *  the scan area (triggered by "Start analyzing" or "Locate & Scan Area"). */
+function SpaceTour({
+  nonce,
+  bounds,
+}: {
+  nonce: number;
+  bounds: [[number, number], [number, number]] | null;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!nonce || !bounds) return;
+    const cx = (bounds[0][0] + bounds[1][0]) / 2;
+    const cy = (bounds[0][1] + bounds[1][1]) / 2;
+    // orbital starting point, then a smooth cinematic dive
+    map.setView([cx, cy], 4, { animate: false });
+    const timer = setTimeout(() => {
+      map.flyToBounds(bounds, { duration: 2.6, padding: [24, 24] });
+    }, 140);
+    return () => clearTimeout(timer);
+  }, [nonce, bounds]);
+  return null;
+}
+
 /** Adds a training sample at each map click while draw mode is on. */
 function DrawHandler() {
   const drawMode = useBasira((s) => s.drawMode);
@@ -114,6 +143,104 @@ function DrawHandler() {
   return null;
 }
 
+/** Rectangle scan-area drawing: drag on the map → custom AOI → instant scan. */
+function AreaDrawHandler() {
+  const map = useMap();
+  const { toast } = useToast();
+  const { runOne, busy } = useScanRunner();
+  const areaDrawMode = useBasira((s) => s.areaDrawMode);
+  const setAreaDrawMode = useBasira((s) => s.setAreaDrawMode);
+  const setAoi = useBasira((s) => s.setAoi);
+  const triggerScanTour = useBasira((s) => s.triggerScanTour);
+  const lang = useBasira((s) => s.lang);
+  const startRef = useRef<[number, number] | null>(null); // [lat, lng]
+  const [preview, setPreview] = useState<[[number, number], [number, number]] | null>(null);
+
+  useEffect(() => {
+    if (areaDrawMode) {
+      map.dragging.disable();
+      map.getContainer().style.cursor = "crosshair";
+    } else {
+      map.dragging.enable();
+      map.getContainer().style.cursor = "";
+    }
+    return () => {
+      map.dragging.enable();
+      map.getContainer().style.cursor = "";
+    };
+  }, [areaDrawMode, map]);
+
+  useMapEvents({
+    mousedown(e) {
+      if (!areaDrawMode) return;
+      startRef.current = [e.latlng.lat, e.latlng.lng];
+      setPreview(null);
+    },
+    mousemove(e) {
+      if (!areaDrawMode || !startRef.current) return;
+      const [lat0, lng0] = startRef.current;
+      setPreview([
+        [Math.min(lat0, e.latlng.lat), Math.min(lng0, e.latlng.lng)],
+        [Math.max(lat0, e.latlng.lat), Math.max(lng0, e.latlng.lng)],
+      ]);
+    },
+    mouseup(e) {
+      if (!areaDrawMode || !startRef.current) return;
+      const [lat0, lng0] = startRef.current;
+      const ring: LonLat[] = [
+        [Math.min(lng0, e.latlng.lng), Math.min(lat0, e.latlng.lat)],
+        [Math.max(lng0, e.latlng.lng), Math.min(lat0, e.latlng.lat)],
+        [Math.max(lng0, e.latlng.lng), Math.max(lat0, e.latlng.lat)],
+        [Math.min(lng0, e.latlng.lng), Math.max(lat0, e.latlng.lat)],
+        [Math.min(lng0, e.latlng.lng), Math.min(lat0, e.latlng.lat)],
+      ];
+      startRef.current = null;
+      setPreview(null);
+      const check = validateScanArea(ring);
+      if (!check.ok) {
+        toast({
+          variant: "destructive",
+          title: t(lang, "toastRunErr"),
+          description: t(
+            lang,
+            check.reason === "outside"
+              ? "coordErrOutside"
+              : check.reason === "size"
+                ? "coordErrSize"
+                : "coordErrValues"
+          ),
+        });
+        return;
+      }
+      const bbox = bboxOfRing(ring);
+      const name = `${((bbox.north + bbox.south) / 2).toFixed(3)}°N ${((bbox.west + bbox.east) / 2).toFixed(3)}°E`;
+      const aoi: AoiState = {
+        id: null,
+        name,
+        nameAr: name,
+        geojson: { type: "Polygon", coordinates: [ring] },
+        isDefault: false,
+        areaKm2: check.areaKm2,
+        bbox,
+      };
+      setAoi(aoi);
+      setAreaDrawMode(false);
+      triggerScanTour();
+      toast({ title: t(lang, "aoiDrawnToast") });
+      // immediate real-time scan of the drawn area (unless a job is running)
+      if (busy === null) void runOne("signature");
+    },
+  });
+
+  if (!preview) return null;
+  return (
+    <Rectangle
+      bounds={preview}
+      pathOptions={{ color: "#10b981", weight: 2, dashArray: "6 4", fillOpacity: 0.08 }}
+    />
+  );
+}
+
 export default function MapPanel() {
   const lang = useBasira((s) => s.lang);
   const aoi = useBasira((s) => s.aoi);
@@ -124,6 +251,10 @@ export default function MapPanel() {
   const drawClassId = useBasira((s) => s.drawClassId);
   const setDrawClassId = useBasira((s) => s.setDrawClassId);
   const clearSamples = useBasira((s) => s.clearSamples);
+  const areaDrawMode = useBasira((s) => s.areaDrawMode);
+  const setAreaDrawMode = useBasira((s) => s.setAreaDrawMode);
+  const isScanning = useBasira((s) => s.isScanning);
+  const scanTourNonce = useBasira((s) => s.scanTourNonce);
   const opacity = useBasira((s) => s.overlayOpacity);
   const setOpacity = useBasira((s) => s.setOverlayOpacity);
   const [defaultGeo, setDefaultGeo] = useState<unknown>(null);
@@ -174,6 +305,10 @@ export default function MapPanel() {
           mlpHidden: s.mlpHidden,
           mlpEpochs: s.mlpEpochs,
           samplePoints: s.samplePoints,
+          aoiGeo: !s.aoi.isDefault && s.aoi.geojson
+            ? (s.aoi.geojson as AoiGeoPayload)
+            : undefined,
+          aoiName: s.aoi.isDefault ? undefined : s.aoi.name,
         });
         if (res.kind !== "run") throw new Error("bad_kind");
         setSideB(liveToPayload(res.result));
@@ -240,9 +375,11 @@ export default function MapPanel() {
     [aoi, activeGeo]
   );
 
-  const showOverlay = Boolean(runResult?.mapUrl) && aoi.isDefault;
-  // Live Earth Engine results are XYZ tile templates ({z}/{x}/{y});
-  // demo results are static PNG overlays stretched over the AOI bounds.
+  // Live tile services cover any classified AOI; static demo PNG overlays
+  // only fit the built-in Borj El Arab bounds.
+  const showOverlay = Boolean(
+    runResult?.mapUrl && (aoi.isDefault || runResult.mode === "live")
+  );
   const isTileService = Boolean(runResult?.mapUrl?.includes("{z}"));
 
   return (
@@ -253,7 +390,7 @@ export default function MapPanel() {
       <MapContainer
         center={AOI_CENTER}
         zoom={10}
-        minZoom={8}
+        minZoom={4}
         maxZoom={17}
         scrollWheelZoom
         style={{ height: "100%", width: "100%" }}
@@ -294,7 +431,7 @@ export default function MapPanel() {
         )}
 
         {/* split-view B side (above A) */}
-        {splitOn && sideB?.mapUrl && aoi.isDefault && sideB.mapUrl.includes("{z}") && (
+        {splitOn && sideB?.mapUrl && sideB.mapUrl.includes("{z}") && (
           <TileLayer
             ref={bTileRef}
             url={sideB.mapUrl}
@@ -305,18 +442,13 @@ export default function MapPanel() {
             attribution="Google Earth Engine · Copernicus Sentinel-2"
           />
         )}
-        {splitOn && sideB?.mapUrl && aoi.isDefault && !sideB.mapUrl.includes("{z}") && (
-          <ImageOverlay
-            ref={bImgRef}
-            url={sideB.mapUrl}
-            bounds={AOI_BOUNDS}
-            opacity={opacity}
-          />
+        {splitOn && sideB?.mapUrl && !sideB.mapUrl.includes("{z}") && (
+          <ImageOverlay ref={bImgRef} url={sideB.mapUrl} bounds={AOI_BOUNDS} opacity={opacity} />
         )}
 
         {activeGeo ? (
           <GeoJSON
-            key={aoi.isDefault ? "default" : `custom-${aoi.id}`}
+            key={aoi.isDefault ? "default" : `custom-${aoi.id ?? aoi.name}`}
             data={activeGeo as never}
             style={{
               color: resolvedTheme === "dark" ? "#4ade80" : "#166534",
@@ -342,20 +474,39 @@ export default function MapPanel() {
         ))}
 
         <FitAoi bounds={fitBounds} />
+        <SpaceTour nonce={scanTourNonce} bounds={fitBounds} />
         <DrawHandler />
+        <AreaDrawHandler />
       </MapContainer>
+
+      {/* ---- orbital radar scan animation (while a run executes) ---- */}
+      {isScanning && (
+        <div className="radar-scan">
+          <div className="radar-grid" />
+          <div className="radar-sweep" />
+          <div className="radar-ring" />
+          <div className="radar-ring" style={{ animationDelay: "0.8s" }} />
+          <div className="absolute top-1/2 left-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 rounded-full border border-emerald-400/50 bg-slate-950/70 px-4 py-1.5 font-mono text-xs font-bold text-emerald-300 shadow-lg backdrop-blur">
+            <Radar className="size-3.5 animate-pulse" />
+            {t(lang, "radarScanning")}
+          </div>
+        </div>
+      )}
 
       {/* Sample drawing toolbar */}
       <div
         className={`absolute bottom-3 z-[2] flex flex-wrap items-center gap-2 rounded-lg border bg-background/95 px-3 py-2 shadow-lg backdrop-blur end-3 ${
-          drawMode ? "border-primary" : ""
+          drawMode || areaDrawMode ? "border-primary" : ""
         }`}
       >
         <Button
           size="sm"
           variant={drawMode ? "default" : "outline"}
           className="h-7 gap-1 px-2 text-[11px] font-bold"
-          onClick={() => setDrawMode(!drawMode)}
+          onClick={() => {
+            setDrawMode(!drawMode);
+            if (!drawMode) setAreaDrawMode(false);
+          }}
           title={t(lang, "drawHint")}
         >
           <MousePointerClick className="size-3.5" />
@@ -377,7 +528,7 @@ export default function MapPanel() {
             ))}
           </SelectContent>
         </Select>
-        <span className="text-[11px] font-bold text-muted-foreground tabular-nums">
+        <span className="font-mono text-[11px] font-bold text-muted-foreground tabular-nums">
           {samplePoints.length} {t(lang, "upPointsCount")}
         </span>
         {samplePoints.length > 0 && (
@@ -429,7 +580,7 @@ export default function MapPanel() {
       {/* Opacity slider (visible with overlay) */}
       {showOverlay && (
         <div className="absolute bottom-3 z-[2] rounded-lg border bg-background/95 px-3 py-2 shadow-lg backdrop-blur start-3">
-          <label className="mb-1 block text-[11px] font-bold text-muted-foreground">
+          <label className="mb-1 block font-mono text-[11px] font-bold text-muted-foreground">
             {t(lang, "opacity")}: {Math.round(opacity * 100)}%
           </label>
           <Slider
@@ -447,7 +598,7 @@ export default function MapPanel() {
       {/* Status badge — reflects the overlay currently on the map */}
       {showOverlay && (
         <div
-          className={`absolute top-3 z-[2] rounded-full border px-2.5 py-1 text-[10px] font-bold backdrop-blur start-3 ${
+          className={`absolute top-3 z-[2] rounded-full border px-2.5 py-1 font-mono text-[10px] font-bold backdrop-blur start-3 ${
             runResult?.mode === "live"
               ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
               : "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-300"
@@ -551,20 +702,20 @@ export default function MapPanel() {
             <ChevronsLeftRight className="size-4" />
           </button>
           <div
-            className="absolute top-1/2 z-[5] -translate-y-1/2 whitespace-nowrap rounded-md border bg-background/95 px-1.5 py-1 text-[10px] font-extrabold shadow-lg backdrop-blur"
+            className="absolute top-1/2 z-[5] -translate-y-1/2 whitespace-nowrap rounded-md border bg-background/95 px-1.5 py-1 font-mono text-[10px] font-extrabold shadow-lg backdrop-blur"
             style={{ left: `${Math.max(3, pos - 46)}%` }}
           >
             {t(lang, "splitALabel")} · {algoName(runResult?.algorithm)} · {" "}
             {seasonShort(runResult?.season ?? "winter", runResult?.dateFrom, runResult?.dateTo)}
           </div>
           <div
-            className="absolute top-1/2 z-[5] -translate-y-1/2 whitespace-nowrap rounded-md border bg-primary/95 px-1.5 py-1 text-[10px] font-extrabold text-primary-foreground shadow-lg"
+            className="absolute top-1/2 z-[5] -translate-y-1/2 whitespace-nowrap rounded-md border bg-primary/95 px-1.5 py-1 font-mono text-[10px] font-extrabold text-primary-foreground shadow-lg"
             style={{ left: `${Math.min(97, pos + 4)}%` }}
           >
             {t(lang, "splitBLabel")} · {algoName(sideB.algorithm)} · {" "}
             {seasonShort(sideB.season, sideB.dateFrom, sideB.dateTo)}
           </div>
-          <p className="pointer-events-none absolute bottom-14 left-1/2 z-[5] -translate-x-1/2 rounded-full bg-background/85 px-2.5 py-1 text-[10px] font-bold text-muted-foreground shadow backdrop-blur">
+          <p className="pointer-events-none absolute bottom-14 left-1/2 z-[5] -translate-x-1/2 rounded-full bg-background/85 px-2.5 py-1 font-mono text-[10px] font-bold text-muted-foreground shadow backdrop-blur">
             {t(lang, "splitHint")}
           </p>
         </>

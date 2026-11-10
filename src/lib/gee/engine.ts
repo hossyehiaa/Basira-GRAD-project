@@ -13,6 +13,7 @@
  * client initializes lazily via getEE().
  */
 import ee from "@google/earthengine";
+import * as fs from "fs";
 
 export const DATASET = "COPERNICUS/S2_SR_HARMONIZED";
 export const EXPORT_CRS = "EPSG:32635"; // UTM 35N — correct zone for Borj El Arab
@@ -51,10 +52,12 @@ export type PeriodInput = {
 };
 export type AlgoKey =
   | "rf" | "svm" | "cart" | "gtb" | "nb" | "mlp" | "knn"
-  | "mindist_e" | "mindist_m" | "kmeans";
+  | "mindist_e" | "mindist_m" | "kmeans" | "signature";
 export const SUPERVISED_KEYS: AlgoKey[] = [
   "rf", "svm", "cart", "gtb", "nb", "mlp", "knn", "mindist_e", "mindist_m",
 ];
+/** every algorithm that can execute a run (supervised + unsupervised + instant) */
+export const RUNNABLE_KEYS: AlgoKey[] = [...SUPERVISED_KEYS, "kmeans", "signature"];
 
 export interface MlpParams {
   /** hidden-layer units (default 24) */
@@ -81,6 +84,12 @@ export interface MlpModel {
 
 export interface SampleInput { classId: number; lon: number; lat: number }
 
+/** GeoJSON polygon AOI (user-drawn box / coordinate area / upload). */
+export interface AoiGeoInput {
+  type: "Polygon" | "MultiPolygon";
+  coordinates: unknown;
+}
+
 export interface RunInput extends PeriodInput {
   kind?: "run" | "compare";
   algorithm: AlgoKey;
@@ -93,6 +102,9 @@ export interface RunInput extends PeriodInput {
   mlpHidden?: number;
   mlpEpochs?: number;
   samplePoints?: SampleInput[];
+  /** custom AOI (defaults to the built-in Borj El Arab polygon) */
+  aoiGeo?: AoiGeoInput;
+  aoiName?: string;
 }
 
 export interface ClassRow {
@@ -118,7 +130,11 @@ export interface RunResult {
   nVal: number;
   durationMs: number;
   downloadUrl: string | null;
-  noteCode?: string; // no_accuracy | kmeans_no_accuracy | ...
+  noteCode?: string; // no_accuracy | kmeans_no_accuracy | instant_estimate | ...
+  /** total classified area (km²) of the exact AOI polygon */
+  areaKm2: number;
+  /** label of the AOI the run was executed on */
+  aoiName?: string | null;
 }
 
 export interface CompareSummaryRow {
@@ -141,8 +157,6 @@ let eeReady: Promise<void> | null = null;
 function readKey(): unknown {
   const path = process.env.GEE_KEY_FILE;
   if (path) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require("fs");
     return JSON.parse(fs.readFileSync(path, "utf8"));
   }
   const raw = process.env.GEE_PRIVATE_KEY_JSON;
@@ -247,6 +261,171 @@ export function resolvePeriod(input: PeriodInput): { start: string; end: string 
     throw new GEEError("bad_date_range");
   }
   return { start: input.dateFrom, end: input.dateTo };
+}
+
+/* ------------------------------------------------------------------ */
+/* AOI handling — built-in Borj El Arab or any user polygon            */
+/* ------------------------------------------------------------------ */
+
+/** Build the EE geometry for a run: the custom GeoJSON polygon when given,
+ *  otherwise the built-in Borj El Arab boundary. */
+export function makeAoi(aoiGeo?: AoiGeoInput): any {
+  if (aoiGeo?.type === "MultiPolygon") {
+    return ee.Geometry.MultiPolygon(aoiGeo.coordinates);
+  }
+  if (aoiGeo?.type === "Polygon") {
+    return ee.Geometry.Polygon(aoiGeo.coordinates);
+  }
+  return ee.Geometry.Polygon([BORJ_COORDS]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Instant scan — reference spectral signature library                 */
+/*                                                                    */
+/* Knowledge-based centroid classifier (no training samples needed):   */
+/* each class is represented by a reference signature over 9 seasonal  */
+/* features derived from Egyptian crop calendars (see the methodology  */
+/* section). Pixels are assigned to the nearest class in scaled        */
+/* feature space — an instant estimate, clearly labelled as such.      */
+/* ------------------------------------------------------------------ */
+
+export const SIG_FEATURES = [
+  "NDVI_mean", "NDVI_p10", "NDVI_p90",
+  "NDWI_mean", "NDMI_mean",
+  "B4_median", "B8_median", "B11_median", "B12_median",
+] as const;
+
+/** per-feature normalization scales (typical between-class spread), tuned to
+ *  the measured Borj El Arab winter/summer feature space (probe script). */
+export const SIG_SCALES = [0.18, 0.2, 0.22, 0.22, 0.15, 0.1, 0.07, 0.12, 0.11];
+
+/** Reference signatures per class id — [NDVI_mean, p10, p90, NDWI, NDMI, B4, B8, B11, B12].
+ *  Calibrated against measured Sentinel-2 feature distributions over Borj El
+ *  Arab (scripts/probe_signatures.ts + scripts/diag_signatures.ts): bright
+ *  sandy desert (B4≈0.36, B11≈0.48), vegetation NDWI(G,NIR) ≈ −0.55, water
+ *  NDWI ≈ +0.5 with dark NIR. Winter = Nov–Apr, Summer = May–Oct. */
+export const SIGNATURES: Record<"winter" | "summer", Record<number, number[]>> = {
+  winter: {
+    1:  [0.52, 0.20, 0.80, -0.54, 0.21, 0.11, 0.40, 0.24, 0.155], // WHT peaks Feb–Mar
+    2:  [0.14, 0.07, 0.25, -0.30, 0.01, 0.22, 0.37, 0.35, 0.28], // MZE off-season (inactive)
+    3:  [0.15, 0.08, 0.26, -0.28, 0.01, 0.21, 0.37, 0.34, 0.27], // RIC off-season (inactive)
+    4:  [0.57, 0.33, 0.78, -0.57, 0.25, 0.10, 0.42, 0.245, 0.155], // CLV multi-cut, dense
+    5:  [0.40, 0.22, 0.62, -0.50, 0.15, 0.135, 0.38, 0.275, 0.185], // POT
+    6:  [0.50, 0.28, 0.72, -0.53, 0.21, 0.12, 0.39, 0.26, 0.17], // BET dense canopy
+    7:  [0.46, 0.23, 0.70, -0.51, 0.17, 0.135, 0.37, 0.265, 0.18], // FBA
+    8:  [0.15, 0.08, 0.24, -0.31, 0.01, 0.22, 0.37, 0.35, 0.28], // SUN off-season (inactive)
+    9:  [0.60, 0.47, 0.75, -0.58, 0.26, 0.095, 0.43, 0.245, 0.15], // ORC evergreen, stable
+    10: [0.11, 0.07, 0.16, -0.24, -0.02, 0.35, 0.44, 0.47, 0.40], // FLW bright desert/bare
+    11: [0.13, 0.08, 0.18, -0.25, -0.06, 0.28, 0.40, 0.33, 0.26], // URB towns, darker SWIR
+    12: [-0.30, -0.45, -0.12, 0.45, -0.03, 0.07, 0.04, 0.03, 0.02], // WTR dark NIR, +NDWI
+  },
+  summer: {
+    1:  [0.14, 0.07, 0.24, -0.29, 0.00, 0.23, 0.38, 0.36, 0.29], // WHT harvested (inactive)
+    2:  [0.48, 0.24, 0.76, -0.53, 0.22, 0.11, 0.41, 0.25, 0.16], // MZE
+    3:  [0.52, 0.26, 0.78, -0.50, 0.25, 0.10, 0.41, 0.24, 0.155], // RIC flooded, wet
+    4:  [0.40, 0.22, 0.60, -0.55, 0.18, 0.12, 0.40, 0.26, 0.17], // CLV minor summer
+    5:  [0.40, 0.22, 0.62, -0.52, 0.17, 0.13, 0.38, 0.27, 0.18], // POT late summer
+    6:  [0.18, 0.10, 0.30, -0.34, 0.04, 0.20, 0.38, 0.34, 0.27], // BET autumn sowing (inactive)
+    7:  [0.13, 0.07, 0.22, -0.30, 0.00, 0.23, 0.38, 0.36, 0.29], // FBA off-season (inactive)
+    8:  [0.44, 0.22, 0.72, -0.52, 0.19, 0.12, 0.39, 0.26, 0.17], // SUN
+    9:  [0.60, 0.47, 0.75, -0.58, 0.26, 0.095, 0.43, 0.245, 0.15], // ORC
+    10: [0.11, 0.07, 0.16, -0.24, -0.02, 0.35, 0.44, 0.47, 0.40], // FLW
+    11: [0.13, 0.08, 0.18, -0.25, -0.06, 0.28, 0.40, 0.33, 0.26], // URB
+    12: [-0.30, -0.45, -0.12, 0.45, -0.03, 0.07, 0.04, 0.03, 0.02], // WTR
+  },
+};
+
+/** Classes the instant scan competes per season — the crop calendar decides:
+ *  off-season crops (e.g. maize in winter) never win, so their labels can't
+ *  appear with misleading shares. */
+export const ACTIVE_SIGNATURE_CLASSES: Record<"winter" | "summer" | "full", number[]> = {
+  winter: [1, 4, 5, 6, 7, 9, 10, 11, 12],
+  summer: [2, 3, 4, 5, 8, 9, 10, 11, 12],
+  full: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+};
+
+/** Regional prevalence prior per class (Egyptian cropping-statistics weight,
+ *  0..1). Applied as a MAP-style distance bonus so the instant estimate does
+ *  not scatter the spectrally similar crop mass into minor classes. */
+export const SIG_PRIORS: Record<"winter" | "summer", Record<number, number>> = {
+  winter: { 1: 0.95, 4: 0.85, 5: 0.3, 6: 0.55, 7: 0.35, 9: 0.65, 10: 0.85, 11: 0.75, 12: 0.45 },
+  summer: { 2: 0.9, 3: 0.6, 4: 0.3, 5: 0.35, 8: 0.5, 9: 0.65, 10: 0.85, 11: 0.75, 12: 0.45 },
+};
+/** prior bonus strength (squared-distance units) */
+export const SIG_PRIOR_LAMBDA = 1.2;
+
+function priorOf(classId: number, season: "winter" | "summer" | "full"): number {
+  if (season === "full") {
+    const w = SIG_PRIORS.winter[classId] ?? 0.3;
+    const s = SIG_PRIORS.summer[classId] ?? 0.3;
+    return (w + s) / 2;
+  }
+  return SIG_PRIORS[season][classId] ?? 0.3;
+}
+
+/** Signature for a class in a given season ("full" = mean of both). */
+function seasonalSignature(classId: number, season: "winter" | "summer" | "full"): number[] {
+  const w = SIGNATURES.winter[classId];
+  const s = SIGNATURES.summer[classId];
+  if (season === "winter") return w;
+  if (season === "summer") return s;
+  return w.map((v, i) => (v + s[i]) / 2);
+}
+
+/** Which reference season fits a date range (≥10 months → full-year). */
+export function signatureSeason(start: string, end: string): "winter" | "summer" | "full" {
+  const a = new Date(start).getTime();
+  const b = new Date(end).getTime();
+  if (Number.isFinite(a) && Number.isFinite(b) && b - a >= 300 * 86400000) return "full";
+  const mid = new Date((a + b) / 2).getMonth() + 1;
+  return mid >= 5 && mid <= 10 ? "summer" : "winter";
+}
+
+/** Reduced 9-feature seasonal stack the signature classifier works on. */
+function signatureFeatures(s2: any): any {
+  const ndvi = s2.select("NDVI");
+  const stats = ndvi.reduce(ee.Reducer.percentile([10, 90]))
+    .addBands(ndvi.reduce(ee.Reducer.mean()).rename("NDVI_mean"));
+  return ee.Image.cat([
+    stats,
+    s2.select("NDWI").mean().rename("NDWI_mean"),
+    s2.select("NDMI").mean().rename("NDMI_mean"),
+    s2.select(["B4", "B8", "B11", "B12"]).median()
+      .rename(["B4_median", "B8_median", "B11_median", "B12_median"]),
+  ]);
+}
+
+/** Nearest-reference-signature classification (instant scan, no samples).
+ *  Only the season's active classes (crop calendar) compete for pixels. */
+export function signatureClassifyImage(sigFeats: any, season: "winter" | "summer" | "full"): any {
+  const x = sigFeats.select(SIG_FEATURES as unknown as string[]);
+  const scales = ee.Image.constant(SIG_SCALES);
+  const active = ACTIVE_SIGNATURE_CLASSES[season];
+  const dists = active.map((classId) =>
+    x
+      .subtract(ee.Image.constant(seasonalSignature(classId, season)))
+      .divide(scales)
+      .pow(2)
+      .reduce(ee.Reducer.sum())
+      // MAP-style prevalence bonus: dominant regional crops win spectral ties
+      .subtract(SIG_PRIOR_LAMBDA * priorOf(classId, season))
+      .rename(`d${classId}`)
+  );
+  let distImg = dists[0];
+  for (let i = 1; i < dists.length; i++) distImg = distImg.addBands(dists[i]);
+  // argmin over the active-class distance bands (first index wins ties)
+  let arg = ee.Image(0).rename("argmin");
+  let best = distImg.select(0);
+  for (let k = 1; k < dists.length; k++) {
+    const cur = distImg.select(k);
+    arg = arg.where(cur.lt(best), ee.Image.constant(k));
+    best = best.min(cur);
+  }
+  let out = ee.Image.constant(active[0]).rename("classification");
+  for (let k = 1; k < active.length; k++) {
+    out = out.where(arg.eq(k), ee.Image.constant(active[k]));
+  }
+  return out;
 }
 
 function tileTemplate(mapId: any): string {
@@ -635,7 +814,7 @@ async function fcToMlpRows(fc: any, bandNames: string[]): Promise<MlpRow[]> {
 export async function runClassification(input: RunInput): Promise<RunResult> {
   const t0 = Date.now();
   await getEE();
-  const aoi = ee.Geometry.Polygon([BORJ_COORDS]);
+  const aoi = makeAoi(input.aoiGeo);
   const { start, end } = resolvePeriod(input);
   const cloud = input.cloudMax ?? 60;
   const rfTrees = input.rfTrees ?? 100;
@@ -657,7 +836,16 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   let noteCode: string | undefined;
   let vis: { min: string; max: string; palette: string };
 
-  if (input.algorithm === "kmeans") {
+  if (input.algorithm === "signature") {
+    // ---- instant scan: nearest reference spectral signature (no samples) ----
+    const sig = signatureFeatures(s2);
+    const season = signatureSeason(start, end);
+    classified = signatureClassifyImage(sig, season).clip(aoi);
+    vis = { min: "1", max: "12", palette: PALETTE_CSV };
+    noteCode = "instant_estimate";
+    nTrain = 0;
+    nVal = 0;
+  } else if (input.algorithm === "kmeans") {
     const ktrain = feats.sample({ region: aoi, scale: 100, numPixels: 2500, seed: 1 });
     const clusterer = ee.Clusterer.wekaKMeans(kClusters).train(ktrain);
     classified = feats.cluster(clusterer).clip(aoi);
@@ -842,6 +1030,8 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     durationMs: Date.now() - t0,
     downloadUrl,
     noteCode,
+    areaKm2: +(totalM2 / 1e6).toFixed(2),
+    aoiName: input.aoiName ?? null,
   };
 }
 
@@ -850,12 +1040,14 @@ export async function compareAll(input: PeriodInput & {
   cloudMax?: number; rfTrees?: number; knnK?: number;
   mlpHidden?: number; mlpEpochs?: number;
   samplePoints?: SampleInput[];
+  aoiGeo?: AoiGeoInput;
+  aoiName?: string;
 }): Promise<{
   summary: CompareSummaryRow[];
   best: RunResult;
 }> {
   await getEE();
-  const aoi = ee.Geometry.Polygon([BORJ_COORDS]);
+  const aoi = makeAoi(input.aoiGeo);
   const { start, end } = resolvePeriod(input);
   const cloud = input.cloudMax ?? 60;
   const rfTrees = input.rfTrees ?? 100;

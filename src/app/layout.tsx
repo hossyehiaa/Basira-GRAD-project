@@ -1,7 +1,30 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
+import { IBM_Plex_Sans_Arabic, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "next-themes";
+
+// ---- IBM Plex family (aerospace telemetry typography) ----
+// Arabic UI: IBM Plex Sans Arabic · English UI: IBM Plex Sans
+// Numbers, coordinates, metrics, dates & tables: IBM Plex Mono (tabular-nums)
+const plexArabic = IBM_Plex_Sans_Arabic({
+  weight: ["300", "400", "500", "600", "700"],
+  subsets: ["arabic", "latin"],
+  variable: "--font-plex-arabic",
+  display: "swap",
+});
+const plexSans = IBM_Plex_Sans({
+  weight: ["300", "400", "500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-plex-sans",
+  display: "swap",
+});
+const plexMono = IBM_Plex_Mono({
+  weight: ["300", "400", "500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "بصيرة | Basira — منصة رصد المحاصيل بالأقمار الصناعية",
@@ -28,23 +51,25 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  themeColor: "#030712",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ar" dir="rtl" suppressHydrationWarning>
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap"
-          rel="stylesheet"
-        />
-      </head>
+    <html
+      lang="ar"
+      dir="rtl"
+      suppressHydrationWarning
+      className={`${plexArabic.variable} ${plexSans.variable} ${plexMono.variable}`}
+    >
       <body className="antialiased bg-background text-foreground">
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+        {/* Dark mode is the default theme — the space aesthetic shines on load */}
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
           {children}
           <Toaster />
         </ThemeProvider>

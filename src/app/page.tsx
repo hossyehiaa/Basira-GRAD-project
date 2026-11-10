@@ -5,7 +5,7 @@ import { Hero } from "@/components/basira/Hero";
 import { Workspace } from "@/components/basira/Workspace";
 import { AlgorithmsSection } from "@/components/basira/AlgorithmsSection";
 import { UploadSection } from "@/components/basira/UploadSection";
-import { GuideSection } from "@/components/basira/GuideSection";
+import { MethodologySection } from "@/components/basira/MethodologySection";
 import { Footer } from "@/components/basira/Footer";
 import { LangSync } from "@/components/basira/LangSync";
 import { PrintReport } from "@/components/basira/PrintReport";
@@ -21,7 +21,7 @@ export default function Page() {
           <Workspace />
           <AlgorithmsSection />
           <UploadSection />
-          <GuideSection />
+          <MethodologySection />
         </main>
         <Footer />
       </div>

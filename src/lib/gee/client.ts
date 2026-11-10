@@ -8,6 +8,13 @@
 import type { AlgoKey, SeasonKey, SamplePoint } from "@/lib/basira/types";
 import type { RunResult, CompareSummaryRow } from "./engineTypes";
 
+/** GeoJSON polygon AOI (mirror of the engine type — kept local so the
+ *  client bundle never imports @google/earthengine). */
+export interface AoiGeoPayload {
+  type: "Polygon" | "MultiPolygon";
+  coordinates: unknown;
+}
+
 export interface GeeJobPayload {
   kind: "run" | "compare";
   algorithm?: AlgoKey;
@@ -22,6 +29,9 @@ export interface GeeJobPayload {
   mlpHidden?: number;
   mlpEpochs?: number;
   samplePoints?: SamplePoint[];
+  /** custom AOI polygon (defaults to built-in Borj El Arab) */
+  aoiGeo?: AoiGeoPayload;
+  aoiName?: string;
 }
 
 export interface GeeHealth {
@@ -198,6 +208,14 @@ export function geeErrorMessage(lang: "ar" | "en", code?: string): string {
     mlp_training_failed: [
       "فشل تدريب الشبكة العصبية على هذه البيانات — جرّب عدد خلايا/دورات مختلف، أو خوارزمية أخرى.",
       "Neural-network training failed on this data — try different hidden units/epochs, or another algorithm.",
+    ],
+    instant_estimate: [
+      "نتيجة الفحص الفوري تقديرية — تُطابَق البكسلات مع مكتبة البصمات الطيفية المرجعية بدون عينات تدريب. للحصول على دقة مقيسة (OA/Kappa) استخدم وضع العينات الموجّه.",
+      "Instant-scan results are estimates — pixels are matched to the reference spectral library without training samples. For measured accuracy (OA/Kappa) use the supervised samples mode.",
+    ],
+    aoi_invalid: [
+      "إحداثيات المنطقة غير صالحة — تأكد أن القيم داخل نطاقات خطوط الطول/العرض الصحيحة وأن المساحة معقولة.",
+      "Invalid area coordinates — make sure the values are within valid lon/lat ranges and the area is reasonable.",
     ],
     job_failed: [
       "تعذّر تنفيذ المهمة على خوادم جوجل — حاول مرة أخرى.",

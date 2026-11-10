@@ -12,7 +12,8 @@ export type AlgoKey =
   | "knn"
   | "mindist_e"
   | "mindist_m"
-  | "kmeans";
+  | "kmeans"
+  | "signature";
 
 export interface CropClass {
   id: number;
@@ -96,6 +97,12 @@ export interface RunPayload {
   nVal?: number;
   /** confusion matrix (available when accuracy was computed) */
   confusion?: ConfusionMatrix | null;
+  /** total scanned area (km²) — exact AOI polygon for live runs */
+  aoiAreaKm2?: number | null;
+  /** total scanned area in feddans */
+  aoiAreaFeddans?: number | null;
+  /** label of the scanned AOI */
+  aoiName?: string | null;
 }
 
 export interface SamplePoint {

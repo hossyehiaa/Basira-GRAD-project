@@ -6,14 +6,34 @@ export const PLATFORM = {
   nameAr: "بصيرة",
   taglineEn: "Satellite Crop Intelligence",
   taglineAr: "ذكاء الأقمار الصناعية للمحاصيل",
-  version: "1.2.0",
+  version: "1.3.0",
   regionEn: "Borj El Arab · Alexandria · Egypt",
   regionAr: "برج العرب · الإسكندرية · مصر",
-  /** Canonical study-area size — exact UTM 35N area of the analysis polygon
-   *  (scripts/calibrate_demo.py keeps Σ class areas equal to this value). */
-  aoiAreaKm2: 596.9,
+  /** Canonical study-area size — the exact analysis-polygon area used across
+   *  the platform (demo compositions sum to this value; see
+   *  scripts/calibrate_demo.py). */
+  aoiAreaKm2: 596.0,
   dataset: "Sentinel-2 L2A (10 m)",
 };
+
+/** Sentinel-2 spectral bands used by the pipeline (methodology section). */
+export const S2_BANDS: {
+  id: string;
+  nameEn: string;
+  nameAr: string;
+  wavelength: string;
+  resolution: string;
+  color: string;
+  roleEn: string;
+  roleAr: string;
+}[] = [
+  { id: "B2", nameEn: "Blue", nameAr: "الأزرق", wavelength: "0.490 µm", resolution: "10 m", color: "#3b82f6", roleEn: "Atmospheric & water penetration", roleAr: "اختراق الغلاف الجوي والمياه" },
+  { id: "B3", nameEn: "Green", nameAr: "الأخضر", wavelength: "0.560 µm", resolution: "10 m", color: "#22c55e", roleEn: "Vegetation reflectance peak", roleAr: "ذروة انعكاس الغطاء النباتي" },
+  { id: "B4", nameEn: "Red", nameAr: "الأحمر", wavelength: "0.665 µm", resolution: "10 m", color: "#ef4444", roleEn: "Chlorophyll absorption", roleAr: "امتصاص الكلوروفيل" },
+  { id: "B8", nameEn: "NIR", nameAr: "قريب الأحمر", wavelength: "0.842 µm", resolution: "10 m", color: "#d946ef", roleEn: "Canopy structure & NDVI", roleAr: "بناء المجموع الخضري و NDVI" },
+  { id: "B11", nameEn: "SWIR-1", nameAr: "متوسط الأشعة تحت الحمراء", wavelength: "1.610 µm", resolution: "20 m", color: "#f59e0b", roleEn: "Soil & vegetation moisture", roleAr: "رطوبة التربة والنبات" },
+  { id: "B12", nameEn: "SWIR-2", nameAr: "بعيد الأشعة تحت الحمراء", wavelength: "2.190 µm", resolution: "20 m", color: "#b91c1c", roleEn: "Dry soil & urban masking", roleAr: "تمييز التربة الجافة والعمران" },
+];
 
 export const CLASSES: CropClass[] = [
   { id: 1, code: "WHT", en: "Wheat", ar: "قمح", color: "#ffff00" },
@@ -52,8 +72,8 @@ export const ALGORITHMS: AlgorithmMeta[] = [
     ar: "التعزيز التدرجي للأشجار",
     family: "supervised",
     supervised: true,
-    demoOa: 0.913,
-    demoKappa: 0.899,
+    demoOa: 0.914,
+    demoKappa: 0.9,
     noteEn: "Boosted trees; strong accuracy with careful tuning.",
     noteAr: "أشجار معزّزة؛ دقة عالية مع ضبط جيد للمعاملات.",
   },
@@ -140,15 +160,31 @@ export const ALGORITHMS: AlgorithmMeta[] = [
     ar: "K-Means (غير موجّه)",
     family: "unsupervised",
     supervised: false,
-    demoOa: 0.644,
-    demoKappa: 0.601,
+    demoOa: 0.642,
+    demoKappa: 0.599,
     noteEn: "Clusters pixels without labels; useful for exploring new areas.",
     noteAr: "يجمّع البكسلات بدون عينات؛ مفيد لاستكشاف مناطق جديدة.",
   },
 ];
 
+/** Instant scan mode — not part of the 10-algorithm comparison league:
+ *  knowledge-based spectral signature matching, runs without any samples. */
+export const SIGNATURE_ALGO: AlgorithmMeta = {
+  key: "signature",
+  en: "Instant Scan (Signature Matching)",
+  ar: "فحص فوري (مطابقة البصمة الطيفية)",
+  family: "supervised", // shown in its own group in the select
+  supervised: true,
+  demoOa: 0,
+  demoKappa: 0,
+  noteEn:
+    "Instant area scan without training points — pixels are matched to the reference spectral library of Egyptian crop calendars.",
+  noteAr:
+    "فحص فوري للمنطقة بدون عينات تدريب — تُطابَق البكسلات مع مكتبة البصمات الطيفية المرجعية للتقويم الزراعي المصري.",
+};
+
 export const ALGO_BY_KEY: Record<string, AlgorithmMeta> = Object.fromEntries(
-  ALGORITHMS.map((a) => [a.key, a])
+  [...ALGORITHMS, SIGNATURE_ALGO].map((a) => [a.key, a])
 );
 
 // Realistic Sentinel-2 NDVI phenology profiles per class (Jan–Dec), tuned to
