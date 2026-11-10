@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useBasira } from "@/lib/basira/store";
 import { t } from "@/lib/basira/i18n";
-import { PLATFORM } from "@/lib/basira/constants";
+import { PLATFORM, ALGORITHMS } from "@/lib/basira/constants";
 import { getGeeHealth, type GeeHealth } from "@/lib/gee/client";
 
 export function Hero() {
@@ -24,7 +24,7 @@ export function Hero() {
   const stats = [
     { value: PLATFORM.aoiAreaKm2, key: "statArea" as const },
     { value: 12, key: "statClasses" as const },
-    { value: 8, key: "statAlgos" as const },
+    { value: ALGORITHMS.length, key: "statAlgos" as const },
     { value: 10, key: "statRes" as const },
   ];
 

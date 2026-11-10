@@ -8,6 +8,8 @@ export type AlgoKey =
   | "svm"
   | "cart"
   | "nb"
+  | "mlp"
+  | "knn"
   | "mindist_e"
   | "mindist_m"
   | "kmeans";
@@ -46,11 +48,19 @@ export interface DemoClassRow {
   f1: number | null;
 }
 
+export interface ConfusionMatrix {
+  /** class ids of the matrix rows/columns, ascending (matrix order) */
+  classIds: number[];
+  /** rows = actual class, cols = predicted class (counts) */
+  rows: number[][];
+}
+
 export interface DemoRunResult {
   oa: number;
   kappa: number;
   mapUrl: string;
   classes: DemoClassRow[];
+  matrix?: ConfusionMatrix;
 }
 
 export interface DemoResults {
@@ -84,6 +94,8 @@ export interface RunPayload {
   downloadUrl?: string | null;
   /** number of validation samples behind the accuracy figures (compare flow) */
   nVal?: number;
+  /** confusion matrix (available when accuracy was computed) */
+  confusion?: ConfusionMatrix | null;
 }
 
 export interface SamplePoint {

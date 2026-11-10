@@ -8,20 +8,25 @@ import { UploadSection } from "@/components/basira/UploadSection";
 import { GuideSection } from "@/components/basira/GuideSection";
 import { Footer } from "@/components/basira/Footer";
 import { LangSync } from "@/components/basira/LangSync";
+import { PrintReport } from "@/components/basira/PrintReport";
 
 export default function Page() {
   return (
-    <div className="flex min-h-screen flex-col">
-      <LangSync />
-      <Header />
-      <main className="flex-1">
-        <Hero />
-        <Workspace />
-        <AlgorithmsSection />
-        <UploadSection />
-        <GuideSection />
-      </main>
-      <Footer />
-    </div>
+    <>
+      <div id="app-root" className="flex min-h-screen flex-col">
+        <LangSync />
+        <Header />
+        <main className="flex-1">
+          <Hero />
+          <Workspace />
+          <AlgorithmsSection />
+          <UploadSection />
+          <GuideSection />
+        </main>
+        <Footer />
+      </div>
+      {/* print-only comprehensive report (see globals.css @media print) */}
+      <PrintReport />
+    </>
   );
 }

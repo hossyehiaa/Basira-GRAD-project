@@ -18,6 +18,9 @@ export interface GeeJobPayload {
   cloudMax?: number;
   rfTrees?: number;
   kClusters?: number;
+  knnK?: number;
+  mlpHidden?: number;
+  mlpEpochs?: number;
   samplePoints?: SamplePoint[];
 }
 
@@ -187,6 +190,14 @@ export function geeErrorMessage(lang: "ar" | "en", code?: string): string {
     all_algorithms_failed: [
       "فشلت جميع الخوارزميات في التدريب على هذه العينات — تأكد أن النقاط داخل حدود منطقة الدراسة وموزعة على فئات مختلفة، ثم أعد المحاولة.",
       "All algorithms failed to train on these samples — make sure the points are inside the study area and spread across different classes, then retry.",
+    ],
+    mlp_needs_classes: [
+      "تعذّر تدريب الشبكة العصبية — تحتاج فئتين مختلفتين على الأقل في مجموعة التدريب وبعض نقاط التحقق. أضف نقاطًا أكثر ثم أعد المحاولة.",
+      "The neural network could not train — it needs at least two different classes in the training split plus some validation points. Add more points and retry.",
+    ],
+    mlp_training_failed: [
+      "فشل تدريب الشبكة العصبية على هذه البيانات — جرّب عدد خلايا/دورات مختلف، أو خوارزمية أخرى.",
+      "Neural-network training failed on this data — try different hidden units/epochs, or another algorithm.",
     ],
     job_failed: [
       "تعذّر تنفيذ المهمة على خوادم جوجل — حاول مرة أخرى.",

@@ -31,7 +31,7 @@ import type { RunResult, CompareSummaryRow } from "@/lib/gee/engineTypes";
 import type { AlgoKey, RunPayload, SeasonKey } from "@/lib/basira/types";
 
 /** Map a live engine result to the store payload shape. */
-function liveToPayload(r: RunResult): RunPayload {
+export function liveToPayload(r: RunResult): RunPayload {
   return {
     mode: "live",
     algorithm: r.algorithm,
@@ -53,6 +53,7 @@ function liveToPayload(r: RunResult): RunPayload {
       ua: c.ua,
       f1: c.f1,
     })),
+    confusion: r.confusion ?? null,
     nImages: r.nImages,
     durationMs: r.durationMs,
     downloadUrl: r.downloadUrl,
@@ -65,6 +66,20 @@ export function ControlPanel() {
   const { toast } = useToast();
   const [busy, setBusy] = useState<"run" | "compare" | null>(null);
   const [phase, setPhase] = useState<"submitted" | "running" | null>(null);
+
+  // custom-range validation: end date must be strictly after the start date
+  const customInvalid =
+    store.season === "custom" &&
+    (!store.dateFrom || !store.dateTo || store.dateFrom >= store.dateTo);
+
+  /** After a full comparison, scroll the results comparison block into view. */
+  const scrollToCompare = () => {
+    setTimeout(() => {
+      document
+        .getElementById("compare-block")
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 180);
+  };
 
   async function runOne() {
     setBusy("run");
@@ -82,6 +97,9 @@ export function ControlPanel() {
             dateTo: store.season === "custom" ? store.dateTo : undefined,
             rfTrees: store.rfTrees,
             kClusters: store.kClusters,
+            knnK: store.knnK,
+            mlpHidden: store.mlpHidden,
+            mlpEpochs: store.mlpEpochs,
             samplePoints: store.samplePoints,
           },
           setPhase
@@ -146,6 +164,9 @@ export function ControlPanel() {
             dateTo: store.season === "custom" ? store.dateTo : undefined,
             rfTrees: store.rfTrees,
             kClusters: store.kClusters,
+            knnK: store.knnK,
+            mlpHidden: store.mlpHidden,
+            mlpEpochs: store.mlpEpochs,
             samplePoints: store.samplePoints,
           },
           setPhase
@@ -179,8 +200,11 @@ export function ControlPanel() {
         const done = res.summary.filter((s: CompareSummaryRow) => s.oa != null).length;
         toast({
           title: t(lang, "toastCompareOk"),
-          description: t(lang, "compareDoneCount").replace("{n}", String(done)),
+          description: t(lang, "compareDoneCount")
+            .replace("{n}", String(done))
+            .replace("{total}", String(res.summary.length)),
         });
+        scrollToCompare();
       } else {
         const results: RunPayload[] = [];
         for (const algo of ALGORITHMS) {
@@ -200,6 +224,7 @@ export function ControlPanel() {
         store.setCompareResults(results);
         if (results[0]) store.setRunResult(results[0]);
         toast({ title: t(lang, "toastCompareOk") });
+        scrollToCompare();
       }
     } catch (e) {
       const code = (e as { code?: string }).code;
@@ -259,32 +284,43 @@ export function ControlPanel() {
           ))}
         </RadioGroup>
         {store.season === "custom" && (
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div>
-              <Label htmlFor="dateFrom" className="text-xs text-muted-foreground">
-                {t(lang, "lblFrom")}
-              </Label>
-              <Input
-                id="dateFrom"
-                type="date"
-                value={store.dateFrom}
-                onChange={(e) => store.setDate(e.target.value, store.dateTo)}
-                className="mt-1"
-              />
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <div>
+                <Label htmlFor="dateFrom" className="text-xs text-muted-foreground">
+                  {t(lang, "lblFrom")}
+                </Label>
+                <Input
+                  id="dateFrom"
+                  type="date"
+                  value={store.dateFrom}
+                  onChange={(e) => store.setDate(e.target.value, store.dateTo)}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="dateTo" className="text-xs text-muted-foreground">
+                  {t(lang, "lblTo")}
+                </Label>
+                <Input
+                  id="dateTo"
+                  type="date"
+                  value={store.dateTo}
+                  onChange={(e) => store.setDate(store.dateFrom, e.target.value)}
+                  className="mt-1"
+                />
+              </div>
             </div>
-            <div>
-              <Label htmlFor="dateTo" className="text-xs text-muted-foreground">
-                {t(lang, "lblTo")}
-              </Label>
-              <Input
-                id="dateTo"
-                type="date"
-                value={store.dateTo}
-                onChange={(e) => store.setDate(store.dateFrom, e.target.value)}
-                className="mt-1"
-              />
-            </div>
-          </div>
+            {customInvalid ? (
+              <p className="mt-2 rounded-lg border border-destructive/50 bg-destructive/10 p-2 text-[11px] font-bold leading-relaxed text-destructive">
+                {t(lang, "errDateRange")}
+              </p>
+            ) : (
+              <p className="mt-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
+                {t(lang, "customMappedNote")}
+              </p>
+            )}
+          </>
         )}
       </section>
 
@@ -317,6 +353,12 @@ export function ControlPanel() {
             </SelectGroup>
           </SelectContent>
         </Select>
+
+        {store.algorithm === "kmeans" && (
+          <p className="mt-2 rounded-lg bg-muted p-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
+            {t(lang, "kmeansInfo")}
+          </p>
+        )}
 
         <div className="mt-4">
           <h4 className="mb-2 text-xs font-bold text-muted-foreground">
@@ -354,7 +396,65 @@ export function ControlPanel() {
               />
             </div>
           )}
-          {store.algorithm !== "rf" && store.algorithm !== "kmeans" && (
+          {store.algorithm === "knn" && (
+            <div>
+              <Label htmlFor="knn-k" className="text-xs">
+                {t(lang, "lblKnnK")}: <span className="font-extrabold tabular-nums">{store.knnK}</span>
+              </Label>
+              <Slider
+                id="knn-k"
+                value={[store.knnK]}
+                min={1}
+                max={15}
+                step={2}
+                onValueChange={(v) => store.setKnnK(Math.max(1, v[0]))}
+                className="mt-2"
+              />
+              <p className="mt-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
+                {lang === "ar"
+                  ? "قيم فردية (١، ٣، ٥…) تفضّل التصويت بلا تعادل."
+                  : "Odd values (1, 3, 5…) avoid tied votes."}
+              </p>
+            </div>
+          )}
+          {store.algorithm === "mlp" && (
+            <div className="space-y-3">
+              <div>
+                <Label htmlFor="mlp-hidden" className="text-xs">
+                  {t(lang, "lblMlpHidden")}:{" "}
+                  <span className="font-extrabold tabular-nums">{store.mlpHidden}</span>
+                </Label>
+                <Slider
+                  id="mlp-hidden"
+                  value={[store.mlpHidden]}
+                  min={8}
+                  max={64}
+                  step={4}
+                  onValueChange={(v) => store.setMlpHidden(v[0])}
+                  className="mt-2"
+                />
+              </div>
+              <div>
+                <Label htmlFor="mlp-epochs" className="text-xs">
+                  {t(lang, "lblMlpEpochs")}:{" "}
+                  <span className="font-extrabold tabular-nums">{store.mlpEpochs}</span>
+                </Label>
+                <Slider
+                  id="mlp-epochs"
+                  value={[store.mlpEpochs]}
+                  min={100}
+                  max={1000}
+                  step={50}
+                  onValueChange={(v) => store.setMlpEpochs(v[0])}
+                  className="mt-2"
+                />
+              </div>
+              <p className="rounded-lg bg-muted p-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
+                {t(lang, "mlpNote")}
+              </p>
+            </div>
+          )}
+          {!["rf", "kmeans", "knn", "mlp"].includes(store.algorithm) && (
             <p className="text-xs text-muted-foreground">
               {lang === "ar"
                 ? "هذه الخوارزمية تعمل بالمعاملات الافتراضية المُثبّتة في المحرك."
@@ -377,7 +477,12 @@ export function ControlPanel() {
 
       {/* Actions */}
       <div className="flex flex-col gap-2">
-        <Button size="lg" className="text-base font-extrabold" onClick={runOne} disabled={busy !== null}>
+        <Button
+          size="lg"
+          className="text-base font-extrabold"
+          onClick={runOne}
+          disabled={busy !== null || customInvalid}
+        >
           {busy === "run" ? <Loader2 className="size-5 animate-spin" /> : <Play className="size-5" />}
           {busy === "run"
             ? phase
@@ -390,7 +495,7 @@ export function ControlPanel() {
           variant="secondary"
           className="text-sm font-extrabold"
           onClick={compareAll}
-          disabled={busy !== null}
+          disabled={busy !== null || customInvalid}
         >
           {busy === "compare" ? (
             <Loader2 className="size-4 animate-spin" />

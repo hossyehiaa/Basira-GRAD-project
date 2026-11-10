@@ -19,6 +19,9 @@ export async function POST(req: NextRequest) {
       cloudMax: body.cloudMax ? Number(body.cloudMax) : 60,
       rfTrees: body.rfTrees ? Number(body.rfTrees) : 100,
       kClusters: body.kClusters ? Number(body.kClusters) : 8,
+      knnK: body.knnK ? Number(body.knnK) : 5,
+      mlpHidden: body.mlpHidden ? Number(body.mlpHidden) : undefined,
+      mlpEpochs: body.mlpEpochs ? Number(body.mlpEpochs) : undefined,
       samplePoints: Array.isArray(body.samplePoints) ? body.samplePoints : [],
     };
     if (body.kind === "compare") {

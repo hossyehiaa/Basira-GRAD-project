@@ -5,7 +5,8 @@
  *
  * Pipeline ported 1:1 from the phase-1 GEE Code Editor app:
  *   S2_SR_HARMONIZED -> SCL cloud mask -> indices -> monthly median stack +
- *   seasonal NDVI percentiles -> classifier (7 supervised + KMeans) ->
+ *   seasonal NDVI percentiles -> classifier (9 supervised incl. MLP hybrid +
+ *   k-NN, plus KMeans) ->
  *   tiles via getMapId + accuracy (70/30 split, seed 42) + area@100m.
  *
  * IMPORTANT: no ee.* object may be created at module load time — the ee
@@ -49,8 +50,34 @@ export type PeriodInput = {
   dateTo?: string;
 };
 export type AlgoKey =
-  | "rf" | "svm" | "cart" | "gtb" | "nb" | "mindist_e" | "mindist_m" | "kmeans";
-export const SUPERVISED_KEYS: AlgoKey[] = ["rf", "svm", "cart", "gtb", "nb", "mindist_e", "mindist_m"];
+  | "rf" | "svm" | "cart" | "gtb" | "nb" | "mlp" | "knn"
+  | "mindist_e" | "mindist_m" | "kmeans";
+export const SUPERVISED_KEYS: AlgoKey[] = [
+  "rf", "svm", "cart", "gtb", "nb", "mlp", "knn", "mindist_e", "mindist_m",
+];
+
+export interface MlpParams {
+  /** hidden-layer units (default 24) */
+  hidden?: number;
+  /** training epochs (default 400) */
+  epochs?: number;
+}
+
+/** Filled by the MLP hybrid trainer — the forward pass is then applied
+ *  per-pixel inside Earth Engine as band math (see mlpClassifyImage). */
+export interface MlpModel {
+  bandNames: string[];
+  /** sorted distinct class ids the model predicts (output order) */
+  classIds: number[];
+  mean: number[];
+  std: number[];
+  /** hidden weights [H][F] + biases [H] */
+  w1: number[][];
+  b1: number[];
+  /** output weights [C][H] + biases [C] */
+  w2: number[][];
+  b2: number[];
+}
 
 export interface SampleInput { classId: number; lon: number; lat: number }
 
@@ -60,6 +87,11 @@ export interface RunInput extends PeriodInput {
   cloudMax?: number;
   rfTrees?: number;
   kClusters?: number;
+  /** k-NN neighbours (default 5) */
+  knnK?: number;
+  /** MLP hyper-parameters */
+  mlpHidden?: number;
+  mlpEpochs?: number;
   samplePoints?: SampleInput[];
 }
 
@@ -79,6 +111,8 @@ export interface RunResult {
   oa: number | null;
   kappa: number | null;
   classes: ClassRow[];
+  /** confusion matrix (rows = actual, cols = predicted) when accuracy was computed */
+  confusion?: { classIds: number[]; rows: number[][] } | null;
   nImages: number;
   nTrain: number;
   nVal: number;
@@ -191,14 +225,16 @@ function buildFeatures(s2: any, startISO: string, endISO: string) {
   const med = s2.select(["B4", "B8", "B11", "B12"]).median();
   return monthly.toBands().addBands(stats).addBands(med);
 }
-function makeClassifier(key: AlgoKey, rfTrees: number) {
+function makeClassifier(key: AlgoKey, rfTrees: number, knnK: number) {
   if (key === "rf") return ee.Classifier.smileRandomForest(rfTrees || 100);
   if (key === "svm") return ee.Classifier.libsvm();
   if (key === "cart") return ee.Classifier.smileCart();
   if (key === "gtb") return ee.Classifier.smileGradientTreeBoost(60);
   if (key === "nb") return ee.Classifier.smileNaiveBayes();
+  if (key === "knn") return ee.Classifier.smileKNN(Math.min(Math.max(knnK || 5, 1), 15));
   if (key === "mindist_e") return ee.Classifier.minimumDistance("euclidean");
   if (key === "mindist_m") return ee.Classifier.minimumDistance("mahalanobis");
+  if (key === "mlp") return null; // hybrid — handled by trainMlp/mlpClassifyImage
   throw new GEEError("unknown_algorithm", key);
 }
 
@@ -295,8 +331,9 @@ function sampleTraining(feats: any, fc: any) {
     .randomColumn("split", 42);
 }
 
-// per-class PA/UA/F1 from a confusion matrix (rows = actual, cols = predicted)
-function perClassMetrics(matrix: number[][]) {
+// per-class PA/UA/F1 from a confusion matrix (rows = actual, cols = predicted);
+// classIds[i] is the real class id of row/col i (matrix axes are sorted class values)
+function perClassMetrics(matrix: number[][], classIds: number[]) {
   const n = matrix.length;
   const colSums: number[] = [];
   for (let j = 0; j < n; j++) {
@@ -305,7 +342,7 @@ function perClassMetrics(matrix: number[][]) {
   }
   const out = new Map<number, { pa: number; ua: number; f1: number; support: number }>();
   for (let i = 0; i < n; i++) {
-    const cls = CLASSES.find((c) => c.id === i + 1) || CLASSES.find((c) => c.id === i);
+    const cls = CLASSES.find((c) => c.id === classIds[i]);
     if (!cls) continue;
     let rowSum = 0;
     for (let j = 0; j < n; j++) rowSum += matrix[i][j] || 0;
@@ -319,6 +356,282 @@ function perClassMetrics(matrix: number[][]) {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* MLP hybrid — trained in Node, applied per-pixel on Earth Engine      */
+/* ------------------------------------------------------------------ */
+
+/** Deterministic PRNG (mulberry32) — the same inputs always produce the
+ *  same network, so results are reproducible for the thesis. */
+function mlpRng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function gauss(rng: () => number): number {
+  // Box–Muller
+  const u = Math.max(1e-9, rng());
+  const v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+export interface MlpRow { classId: number; x: number[] }
+
+/** Standardize + train a 1-hidden-layer softmax network (full-batch GD with
+ *  momentum). Returns the model together with the per-feature mean/std so the
+ *  identical transform can be replayed as Earth Engine band math. */
+export function mlpTrain(
+  rows: MlpRow[],
+  bandNames: string[],
+  params: MlpParams
+): MlpModel {
+  const F = bandNames.length;
+  const classIds = [...new Set(rows.map((r) => r.classId))].sort((a, b) => a - b);
+  const C = classIds.length;
+  const n = rows.length;
+  if (C < 2) throw new GEEError("mlp_needs_classes", "MLP needs ≥ 2 classes in the training split");
+  if (F < 1 || n < 2) throw new GEEError("mlp_needs_classes", "MLP needs ≥ 2 training pixels");
+
+  // ---- feature standardization (train statistics only) ----
+  const mean = new Array(F).fill(0);
+  const std = new Array(F).fill(1);
+  for (let f = 0; f < F; f++) {
+    let s = 0;
+    for (const r of rows) s += r.x[f];
+    mean[f] = s / n;
+    let v = 0;
+    for (const r of rows) v += (r.x[f] - mean[f]) ** 2;
+    std[f] = Math.max(1e-6, Math.sqrt(v / Math.max(1, n - 1)));
+  }
+  const X: number[][] = rows.map((r) => r.x.map((v, f) => (v - mean[f]) / std[f]));
+  const yIdx = rows.map((r) => classIds.indexOf(r.classId));
+
+  // ---- architecture ----
+  const H = Math.min(Math.max(params.hidden ?? 24, 4), 128);
+  const epochs = Math.min(Math.max(params.epochs ?? 400, 50), 2000);
+  const rng = mlpRng(0xba51da);
+  const he1 = Math.sqrt(2 / F);
+  const he2 = Math.sqrt(2 / H);
+  const w1: number[][] = Array.from({ length: H }, () =>
+    Array.from({ length: F }, () => gauss(rng) * he1));
+  const b1: number[] = new Array(H).fill(0);
+  const w2: number[][] = Array.from({ length: C }, () =>
+    Array.from({ length: H }, () => gauss(rng) * he2));
+  const b2: number[] = new Array(C).fill(0);
+
+  // ---- full-batch gradient descent with momentum ----
+  // Each epoch: forward ALL samples, accumulate the mean gradients, then apply
+  // a single momentum step — standard, deterministic, reproducible.
+  const lr0 = 0.25;
+  const mom = 0.9;
+  const gW1 = w1.map((r) => r.map(() => 0));
+  const gB1 = new Array(H).fill(0);
+  const gW2 = w2.map((r) => r.map(() => 0));
+  const gB2 = new Array(C).fill(0);
+  const vw1 = w1.map((r) => r.map(() => 0));
+  const vb1 = new Array(H).fill(0);
+  const vw2 = w2.map((r) => r.map(() => 0));
+  const vb2 = new Array(C).fill(0);
+  const hidden = new Array(H);
+  const probs = new Array(C);
+
+  const zeroGrad = () => {
+    for (const row of gW1) row.fill(0);
+    gB1.fill(0);
+    for (const row of gW2) row.fill(0);
+    gB2.fill(0);
+  };
+
+  for (let ep = 0; ep < epochs; ep++) {
+    const lr = lr0 * Math.pow(0.995, ep);
+    zeroGrad();
+    for (let i = 0; i < n; i++) {
+      const xi = X[i];
+      // ---- forward ----
+      for (let j = 0; j < H; j++) {
+        let s = b1[j];
+        const wj = w1[j];
+        for (let f = 0; f < F; f++) s += wj[f] * xi[f];
+        hidden[j] = s > 0 ? s : 0; // ReLU (store pre-activation openness via hidden>0)
+      }
+      let maxL = -Infinity;
+      const logits = new Array(C);
+      for (let k = 0; k < C; k++) {
+        let s = b2[k];
+        const wk = w2[k];
+        for (let j = 0; j < H; j++) s += wk[j] * hidden[j];
+        logits[k] = s;
+        if (s > maxL) maxL = s;
+      }
+      let sumP = 0;
+      for (let k = 0; k < C; k++) { probs[k] = Math.exp(logits[k] - maxL); sumP += probs[k]; }
+      for (let k = 0; k < C; k++) probs[k] /= sumP;
+      // ---- backward: accumulate mean cross-entropy gradients ----
+      const yi = yIdx[i];
+      for (let k = 0; k < C; k++) {
+        const dOut = (probs[k] - (k === yi ? 1 : 0)) / n;
+        if (dOut === 0) continue;
+        const gk = gW2[k];
+        const wk = w2[k];
+        for (let j = 0; j < H; j++) {
+          if (hidden[j] > 0) gk[j] += dOut * hidden[j];
+        }
+        gB2[k] += dOut;
+        // hidden-layer gradient via current (pre-update) output weights
+        for (let j = 0; j < H; j++) {
+          if (hidden[j] > 0) {
+            const dh = dOut * wk[j];
+            if (dh === 0) continue;
+            const gj = gW1[j];
+            for (let f = 0; f < F; f++) gj[f] += dh * xi[f];
+            gB1[j] += dh;
+          }
+        }
+      }
+    }
+    // ---- single momentum step per epoch ----
+    for (let j = 0; j < H; j++) {
+      const wj = w1[j];
+      const vj = vw1[j];
+      const gj = gW1[j];
+      for (let f = 0; f < F; f++) {
+        vj[f] = mom * vj[f] - lr * gj[f];
+        wj[f] += vj[f];
+      }
+      vb1[j] = mom * vb1[j] - lr * gB1[j];
+      b1[j] += vb1[j];
+    }
+    for (let k = 0; k < C; k++) {
+      const wk = w2[k];
+      const vwk = vw2[k];
+      const gk = gW2[k];
+      for (let j = 0; j < H; j++) {
+        vwk[j] = mom * vwk[j] - lr * gk[j];
+        wk[j] += vwk[j];
+      }
+      vb2[k] = mom * vb2[k] - lr * gB2[k];
+      b2[k] += vb2[k];
+    }
+  }
+  for (const v of [...w1.flat(), ...w2.flat(), ...b1, ...b2]) {
+    if (!Number.isFinite(v)) throw new GEEError("mlp_training_failed", "non-finite MLP weights");
+  }
+  return { bandNames, classIds, mean, std, w1, b1, w2, b2 };
+}
+
+/** Forward pass of a trained model on a feature vector (JS side). */
+export function mlpPredict(model: MlpModel, x: number[]): number {
+  const F = model.bandNames.length;
+  const H = model.b1.length;
+  const C = model.classIds.length;
+  const hidden = new Array(H);
+  for (let j = 0; j < H; j++) {
+    let s = model.b1[j];
+    const wj = model.w1[j];
+    for (let f = 0; f < F; f++) s += wj[f] * ((x[f] - model.mean[f]) / model.std[f]);
+    hidden[j] = s > 0 ? s : 0;
+  }
+  let bestK = 0;
+  let bestV = -Infinity;
+  for (let k = 0; k < C; k++) {
+    let s = model.b2[k];
+    const wk = model.w2[k];
+    for (let j = 0; j < H; j++) s += wk[j] * hidden[j];
+    if (s > bestV) { bestV = s; bestK = k; }
+  }
+  return model.classIds[bestK];
+}
+
+/** Replay the trained network per-pixel inside Earth Engine: the standardized
+ *  feature stack is multiplied by the hidden weights (band-wise dot products via
+ *  reduce(sum)), passed through ReLU, then the output logits argmax maps each
+ *  pixel to its class id — mathematically identical to mlpPredict. */
+export function mlpClassifyImage(feats: any, model: MlpModel): any {
+  const F = model.bandNames.length;
+  const H = model.b1.length;
+  const C = model.classIds.length;
+  // standardized feature stack (same transform as JS training)
+  const z = feats
+    .select(model.bandNames)
+    .subtract(ee.Image.constant(model.mean))
+    .divide(ee.Image.constant(model.std));
+  // hidden layer: H single-band images h0..h{H-1}
+  const hiddenBands: any[] = [];
+  for (let j = 0; j < H; j++) {
+    hiddenBands.push(
+      z.multiply(ee.Image.constant(model.w1[j])).reduce(ee.Reducer.sum())
+        .add(model.b1[j]).max(0).rename(`h${j}`)
+    );
+  }
+  let hid = hiddenBands[0];
+  for (let j = 1; j < H; j++) hid = hid.addBands(hiddenBands[j]);
+  // output logits l0..l{C-1}
+  const logitBands: any[] = [];
+  for (let k = 0; k < C; k++) {
+    logitBands.push(
+      hid.multiply(ee.Image.constant(model.w2[k])).reduce(ee.Reducer.sum())
+        .add(model.b2[k]).rename(`l${k}`)
+    );
+  }
+  let lg = logitBands[0];
+  for (let k = 1; k < C; k++) lg = lg.addBands(logitBands[k]);
+  // argmax over logit bands; first index wins ties (deterministic)
+  let arg = ee.Image(0).rename("argmax");
+  let best = lg.select("l0");
+  for (let k = 1; k < C; k++) {
+    const cur = lg.select(`l${k}`);
+    arg = arg.where(cur.gt(best), ee.Image.constant(k));
+    best = best.max(cur);
+  }
+  // band index -> real class id -> single "classification" band
+  let out = ee.Image.constant(model.classIds[0]).rename("classification");
+  for (let k = 1; k < C; k++) {
+    out = out.where(arg.eq(k), ee.Image.constant(model.classIds[k]));
+  }
+  return out;
+}
+
+/** Build the confusion matrix of JS-side predictions on validation rows.
+ *  Axes cover the union of actual and predicted classes (ascending). */
+export function mlpConfusion(
+  model: MlpModel,
+  valRows: MlpRow[]
+): { classIds: number[]; rows: number[][]; oa: number; kappa: number } {
+  const ids = [...new Set([...model.classIds, ...valRows.map((r) => r.classId)])]
+    .sort((a, b) => a - b);
+  const idx = new Map(ids.map((id, i) => [id, i]));
+  const m = ids.map(() => ids.map(() => 0));
+  for (const r of valRows) {
+    const pred = mlpPredict(model, r.x);
+    m[idx.get(r.classId)!][idx.get(pred)!] += 1;
+  }
+  const total = valRows.length;
+  const rowSums = m.map((row) => row.reduce((s, v) => s + v, 0));
+  const colSums = ids.map((_, j) => m.reduce((s, row) => s + row[j], 0));
+  const diag = ids.reduce((s, _, i) => s + m[i][i], 0);
+  const oa = total ? diag / total : 0;
+  const pe = total ? rowSums.reduce((s, r, i) => s + r * colSums[i], 0) / (total * total) : 0;
+  const kappa = pe < 1 ? (oa - pe) / (1 - pe) : 0;
+  return { classIds: ids, rows: m, oa, kappa };
+}
+
+/** getInfo() a sampled FC into plain rows for the MLP trainer/evaluator. */
+async function fcToMlpRows(fc: any, bandNames: string[]): Promise<MlpRow[]> {
+  const info = await p<any>((cb) => fc.getInfo(cb));
+  const out: MlpRow[] = [];
+  for (const f of info?.features ?? []) {
+    const props = (f?.properties ?? {}) as Record<string, unknown>;
+    const classId = Number(props["class"]);
+    const x = bandNames.map((b) => Number(props[b]));
+    if (!Number.isFinite(classId) || x.some((v) => !Number.isFinite(v))) continue;
+    out.push({ classId, x });
+  }
+  return out;
+}
+
 export async function runClassification(input: RunInput): Promise<RunResult> {
   const t0 = Date.now();
   await getEE();
@@ -326,6 +639,7 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   const { start, end } = resolvePeriod(input);
   const cloud = input.cloudMax ?? 60;
   const rfTrees = input.rfTrees ?? 100;
+  const knnK = input.knnK ?? 5;
   const kClusters = Math.min(Math.max(input.kClusters ?? 8, 2), 30);
 
   const nImages = await p<number>((cb) =>
@@ -338,6 +652,7 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   let oa: number | null = null;
   let kappa: number | null = null;
   let perClass: Map<number, { pa: number; ua: number; f1: number; support: number }> | null = null;
+  let confusion: { classIds: number[]; rows: number[][] } | null = null;
   let nTrain = 0, nVal = 0;
   let noteCode: string | undefined;
   let vis: { min: string; max: string; palette: string };
@@ -369,10 +684,14 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     ]);
     if (nTrain === 0) throw new GEEError("samples_outside_aoi");
 
-    const classifier = makeClassifier(input.algorithm, rfTrees).train({
-      features: train, classProperty: "class", inputProperties: feats.bandNames(),
-    });
-    classified = feats.classify(classifier).clip(aoi);
+    const classifier = input.algorithm === "mlp"
+      ? null // hybrid: trained in Node below, applied via mlpClassifyImage
+      : makeClassifier(input.algorithm, rfTrees, knnK).train({
+          features: train, classProperty: "class", inputProperties: feats.bandNames(),
+        });
+    classified = input.algorithm === "mlp"
+      ? null // assigned after training
+      : feats.classify(classifier!).clip(aoi);
     vis = { min: "1", max: "12", palette: PALETTE_CSV };
 
     // Mahalanobis inverts a per-class covariance matrix over ~27-45 feature
@@ -391,13 +710,49 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
       }
     }
 
-    if (nVal >= 10) {
-      const cm = val.classify(classifier).errorMatrix("class", "classification");
+    if (input.algorithm === "mlp") {
+      // ---- hybrid MLP: train on this Node process, replay on EE per pixel ----
+      const bandNames: string[] = await p<any>((cb) => feats.bandNames().getInfo(cb));
+      const [trainRows, valRows] = await Promise.all([
+        fcToMlpRows(train, bandNames),
+        fcToMlpRows(val, bandNames),
+      ]);
+      const model = mlpTrain(trainRows, bandNames, {
+        hidden: input.mlpHidden, epochs: input.mlpEpochs,
+      });
+      classified = mlpClassifyImage(feats, model).clip(aoi);
+      if (nVal >= 10 && valRows.length > 0) {
+        const cm = mlpConfusion(model, valRows);
+        oa = cm.oa;
+        kappa = cm.kappa;
+        perClass = perClassMetrics(cm.rows, cm.classIds);
+        confusion = { classIds: cm.classIds, rows: cm.rows };
+      } else {
+        noteCode = "no_accuracy";
+      }
+    } else if (nVal >= 10) {
+      const cm = val.classify(classifier!).errorMatrix("class", "classification");
       const acc = await p<any>((cb) => ee.Dictionary({
         oa: cm.accuracy(), kappa: cm.kappa(), matrix: cm.array().toList(),
+        classes: val.aggregate_array("class").distinct().sort(),
       }).getInfo(cb));
       oa = Number(acc.oa); kappa = Number(acc.kappa);
-      perClass = perClassMetrics(acc.matrix || []);
+      const valClasses: number[] = (acc.classes || []).map((x: unknown) => Number(x));
+      const raw: number[][] = (acc.matrix || []).map((row: unknown[]) =>
+        (row as unknown[]).map((x) => Number(x)));
+      // EE error matrices are indexed by class VALUE (0..maxValue), so they
+      // arrive with empty rows/cols for unsampled ids. Compact them to the
+      // axes actually present: validation classes + predicted classes.
+      const colTotal = (idx: number) => raw.reduce((s, row) => s + (row[idx] || 0), 0);
+      const predClasses = raw.map((_, idx) => idx).filter((idx) => colTotal(idx) > 0);
+      const axes = Array.from(new Set([...valClasses, ...predClasses]))
+        .filter((v) => v > 0)
+        .sort((a, b) => a - b);
+      if (axes.length > 1 && Math.max(...axes) < raw.length) {
+        const compact = axes.map((a) => axes.map((p) => raw[a]?.[p] || 0));
+        perClass = perClassMetrics(compact, axes);
+        confusion = { classIds: axes, rows: compact };
+      }
     } else {
       noteCode = "no_accuracy";
     }
@@ -424,6 +779,16 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   const groups: { class: number; sum: number }[] = areaRes.groups || [];
   const totalM2 = groups.reduce((s, g) => s + g.sum, 0);
 
+  // rounding fixup: displayed percentages must sum to exactly 100.0
+  const percentOf = (m2: number) => (totalM2 ? +((m2 / totalM2) * 100).toFixed(1) : 0);
+  const percentSum = groups.reduce((s, g) => s + percentOf(g.sum), 0);
+  const percentDrift = +(100 - percentSum).toFixed(1);
+  const biggest = groups.reduce((a, b) => (b.sum > (a?.sum ?? -1) ? b : a), groups[0]);
+  const fixedPercent = new Map<number, number>();
+  if (biggest && percentDrift !== 0) fixedPercent.set(
+    biggest.class, +(percentOf(biggest.sum) + percentDrift).toFixed(1)
+  );
+
   // merge area + accuracy into class rows
   const rowsMap = new Map<number, ClassRow>();
   for (const g of groups) {
@@ -435,7 +800,7 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     rowsMap.set(id, {
       classId: id, code: base.code, en: base.en, ar: base.ar, color: base.color,
       areaKm2: +(g.sum / 1e6).toFixed(2),
-      percent: totalM2 ? +((g.sum / totalM2) * 100).toFixed(1) : 0,
+      percent: fixedPercent.get(g.class) ?? percentOf(g.sum),
       pa: null, ua: null, f1: null, support: 0,
     });
   }
@@ -472,6 +837,7 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     dateTo: end,
     tileUrl: tileTemplate(mapId),
     oa, kappa, classes,
+    confusion,
     nImages, nTrain, nVal,
     durationMs: Date.now() - t0,
     downloadUrl,
@@ -479,9 +845,11 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   };
 }
 
-/** Compare all 7 supervised algorithms; returns summary + full result of the best. */
+/** Compare all supervised algorithms; returns summary + full result of the best. */
 export async function compareAll(input: PeriodInput & {
-  cloudMax?: number; rfTrees?: number; samplePoints?: SampleInput[];
+  cloudMax?: number; rfTrees?: number; knnK?: number;
+  mlpHidden?: number; mlpEpochs?: number;
+  samplePoints?: SampleInput[];
 }): Promise<{
   summary: CompareSummaryRow[];
   best: RunResult;
@@ -491,6 +859,7 @@ export async function compareAll(input: PeriodInput & {
   const { start, end } = resolvePeriod(input);
   const cloud = input.cloudMax ?? 60;
   const rfTrees = input.rfTrees ?? 100;
+  const knnK = input.knnK ?? 5;
   validateSamples(input.samplePoints);
 
   const nImages = await p<number>((cb) =>
@@ -509,17 +878,43 @@ export async function compareAll(input: PeriodInput & {
   const train = training.filter(ee.Filter.lt("split", 0.7));
   const val = training.filter(ee.Filter.gte("split", 0.7));
 
+  // MLP trains on this Node process — fetch its feature tables once up front
+  // and reuse them for training + validation (same split as the GEE path).
+  let mlpData: { bandNames: string[]; trainRows: MlpRow[]; valRows: MlpRow[] } | null = null;
+  if (SUPERVISED_KEYS.includes("mlp")) {
+    const bandNames: string[] = await p<any>((cb) => feats.bandNames().getInfo(cb));
+    const [trainRows, valRows] = await Promise.all([
+      fcToMlpRows(train, bandNames),
+      fcToMlpRows(val, bandNames),
+    ]);
+    mlpData = { bandNames, trainRows, valRows };
+  }
+
   const summary: CompareSummaryRow[] = [];
   for (const key of SUPERVISED_KEYS) {
     try {
-      const classifier = makeClassifier(key, rfTrees).train({
-        features: train, classProperty: "class", inputProperties: feats.bandNames(),
-      });
-      const cm = val.classify(classifier).errorMatrix("class", "classification");
-      const acc = await p<any>((cb) => ee.Dictionary({
-        oa: cm.accuracy(), kappa: cm.kappa(),
-      }).getInfo(cb));
-      summary.push({ algorithm: key, oa: Number(acc.oa), kappa: Number(acc.kappa), nVal: 0 });
+      let oa: number | null;
+      let kappa: number | null;
+      if (key === "mlp") {
+        if (!mlpData || mlpData.valRows.length === 0) {
+          throw new GEEError("mlp_needs_classes", "no validation rows for MLP");
+        }
+        const model = mlpTrain(mlpData.trainRows, mlpData.bandNames, {
+          hidden: input.mlpHidden, epochs: input.mlpEpochs,
+        });
+        const cm = mlpConfusion(model, mlpData.valRows);
+        oa = cm.oa; kappa = cm.kappa;
+      } else {
+        const classifier = makeClassifier(key, rfTrees, knnK).train({
+          features: train, classProperty: "class", inputProperties: feats.bandNames(),
+        });
+        const cm = val.classify(classifier).errorMatrix("class", "classification");
+        const acc = await p<any>((cb) => ee.Dictionary({
+          oa: cm.accuracy(), kappa: cm.kappa(),
+        }).getInfo(cb));
+        oa = Number(acc.oa); kappa = Number(acc.kappa);
+      }
+      summary.push({ algorithm: key, oa, kappa, nVal: 0 });
     } catch (err) {
       // one algorithm failing (e.g. Mahalanobis with few samples per class)
       // must not kill the whole comparison — mark it as failed and continue.
@@ -532,7 +927,10 @@ export async function compareAll(input: PeriodInput & {
     throw new GEEError("all_algorithms_failed", "every supervised algorithm failed to train");
   }
   summary.sort((a, b) => (b.oa ?? -1) - (a.oa ?? -1));
-  const best = await runClassification({ ...input, algorithm: summary[0].algorithm, kind: "run" });
+  const best = await runClassification({
+    ...input, algorithm: summary[0].algorithm, kind: "run",
+    knnK, mlpHidden: input.mlpHidden, mlpEpochs: input.mlpEpochs,
+  });
   for (const row of summary) row.nVal = best.nVal;
   return { summary, best };
 }

@@ -1,7 +1,9 @@
 "use client";
 // Basira — interactive map (Leaflet): satellite basemap, AOI boundary,
-// classification overlay, sample points, legend, opacity control
-import { useEffect, useMemo, useState } from "react";
+// classification overlay, sample points, legend, opacity control,
+// A/B split-view comparison with a draggable divider.
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ImageOverlay as LImageOverlay, TileLayer as LTileLayer } from "leaflet";
 import {
   MapContainer,
   TileLayer,
@@ -13,24 +15,40 @@ import {
   useMapEvents,
 } from "react-leaflet";
 import { useTheme } from "next-themes";
-import { Layers, ChevronDown, ChevronUp, MousePointerClick, Eraser } from "lucide-react";
+import {
+  Layers,
+  ChevronDown,
+  ChevronUp,
+  MousePointerClick,
+  Eraser,
+  Columns2,
+  Loader2,
+  ChevronsLeftRight,
+} from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { useBasira } from "@/lib/basira/store";
 import { t } from "@/lib/basira/i18n";
 import {
+  ALGORITHMS,
+  ALGO_BY_KEY,
   AOI_BOUNDS,
   AOI_CENTER,
   CLASSES,
   ESRI_ATTRIBUTION,
 } from "@/lib/basira/constants";
+import { getGeeHealth, submitGeeJob } from "@/lib/gee/client";
+import { liveToPayload } from "./ControlPanel";
+import type { AlgoKey, RunPayload, SeasonKey } from "@/lib/basira/types";
 
 function getBounds(geo: unknown): [[number, number], [number, number]] | null {
   let minLat = 90,
@@ -112,6 +130,103 @@ export default function MapPanel() {
   const [legendOpen, setLegendOpen] = useState(true);
   const { resolvedTheme } = useTheme();
 
+  // ---- split-view (A/B comparison) state ----
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const aTileRef = useRef<LTileLayer | null>(null);
+  const aImgRef = useRef<LImageOverlay | null>(null);
+  const bTileRef = useRef<LTileLayer | null>(null);
+  const bImgRef = useRef<LImageOverlay | null>(null);
+  const [splitOn, setSplitOn] = useState(false);
+  const [sideB, setSideB] = useState<RunPayload | null>(null);
+  const [pickAlgo, setPickAlgo] = useState<AlgoKey>("rf");
+  const [pickSeason, setPickSeason] = useState<SeasonKey>("winter");
+  const [loadingB, setLoadingB] = useState(false);
+  const [bErr, setBErr] = useState(false);
+  const [pos, setPos] = useState(50);
+
+  const algoName = (k: string | undefined) =>
+    k ? (lang === "ar" ? ALGO_BY_KEY[k]?.ar ?? k : ALGO_BY_KEY[k]?.en ?? k) : "—";
+  const seasonShort = (s: SeasonKey, df?: string | null, dt?: string | null) =>
+    s === "winter"
+      ? t(lang, "seasonWinter")
+      : s === "summer"
+        ? t(lang, "seasonSummer")
+        : s === "full"
+          ? t(lang, "seasonFull")
+          : `${(df ?? "").slice(0, 7)}→${(dt ?? "").slice(0, 7)}`;
+
+  /** Load the B side of the comparison with the picked algorithm × season. */
+  async function loadSideB() {
+    if (!runResult) return;
+    setLoadingB(true);
+    setBErr(false);
+    try {
+      const health = await getGeeHealth();
+      if (health.mode === "live") {
+        const s = useBasira.getState();
+        const res = await submitGeeJob({
+          kind: "run",
+          algorithm: pickAlgo,
+          season: pickSeason,
+          rfTrees: s.rfTrees,
+          kClusters: s.kClusters,
+          knnK: s.knnK,
+          mlpHidden: s.mlpHidden,
+          mlpEpochs: s.mlpEpochs,
+          samplePoints: s.samplePoints,
+        });
+        if (res.kind !== "run") throw new Error("bad_kind");
+        setSideB(liveToPayload(res.result));
+      } else {
+        const res = await fetch("/api/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ algorithm: pickAlgo, season: pickSeason }),
+        });
+        if (!res.ok) throw new Error("sideB failed");
+        setSideB((await res.json()) as RunPayload);
+      }
+    } catch {
+      setSideB(null);
+      setBErr(true);
+    } finally {
+      setLoadingB(false);
+    }
+  }
+
+  /** Keep the two overlay layers clipped to the divider position. */
+  useEffect(() => {
+    const aEl =
+      aTileRef.current?.getContainer?.() ?? aImgRef.current?.getElement?.() ?? null;
+    const bEl =
+      bTileRef.current?.getContainer?.() ?? bImgRef.current?.getElement?.() ?? null;
+    if (!splitOn || !sideB?.mapUrl) {
+      aEl?.style.removeProperty("clip-path");
+      bEl?.style.removeProperty("clip-path");
+      return;
+    }
+    if (aEl) aEl.style.clipPath = `inset(0 ${100 - pos}% 0 0)`;
+    if (bEl) bEl.style.clipPath = `inset(0 0 0 ${pos}%)`;
+  }, [splitOn, sideB, pos, runResult, opacity]);
+
+  /** Drag the divider: pointer events on the handle, move/up on window. */
+  const onHandleDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const el = wrapRef.current;
+    if (!el) return;
+    const move = (ev: PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      if (!rect.width) return;
+      const p = ((ev.clientX - rect.left) / rect.width) * 100;
+      setPos(Math.min(98, Math.max(2, p)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up, { once: true });
+  };
+
   useEffect(() => {
     fetch("/borj_el_arab.geojson")
       .then((r) => r.json())
@@ -131,7 +246,10 @@ export default function MapPanel() {
   const isTileService = Boolean(runResult?.mapUrl?.includes("{z}"));
 
   return (
-    <div className="relative h-full min-h-[420px] w-full overflow-hidden rounded-xl border md:h-[620px]">
+    <div
+      ref={wrapRef}
+      className="relative h-full min-h-[420px] w-full overflow-hidden rounded-xl border md:h-[620px]"
+    >
       <MapContainer
         center={AOI_CENTER}
         zoom={10}
@@ -157,6 +275,7 @@ export default function MapPanel() {
 
         {showOverlay && isTileService && (
           <TileLayer
+            ref={aTileRef}
             url={runResult!.mapUrl!}
             opacity={opacity}
             minZoom={8}
@@ -167,7 +286,29 @@ export default function MapPanel() {
 
         {showOverlay && !isTileService && (
           <ImageOverlay
+            ref={aImgRef}
             url={runResult!.mapUrl!}
+            bounds={AOI_BOUNDS}
+            opacity={opacity}
+          />
+        )}
+
+        {/* split-view B side (above A) */}
+        {splitOn && sideB?.mapUrl && aoi.isDefault && sideB.mapUrl.includes("{z}") && (
+          <TileLayer
+            ref={bTileRef}
+            url={sideB.mapUrl}
+            opacity={opacity}
+            minZoom={8}
+            maxZoom={17}
+            zIndex={250}
+            attribution="Google Earth Engine · Copernicus Sentinel-2"
+          />
+        )}
+        {splitOn && sideB?.mapUrl && aoi.isDefault && !sideB.mapUrl.includes("{z}") && (
+          <ImageOverlay
+            ref={bImgRef}
+            url={sideB.mapUrl}
             bounds={AOI_BOUNDS}
             opacity={opacity}
           />
@@ -314,6 +455,119 @@ export default function MapPanel() {
         >
           {t(lang, runResult?.mode === "live" ? "mapLiveNote" : "demoNote")}
         </div>
+      )}
+
+      {/* ---- split-view controls (top center) ---- */}
+      <div className="absolute top-3 left-1/2 z-[5] flex -translate-x-1/2 flex-col items-center gap-1.5">
+        <Button
+          size="sm"
+          variant={splitOn ? "default" : "outline"}
+          className="h-7 gap-1 px-2 text-[11px] font-bold shadow-lg"
+          onClick={() => setSplitOn(!splitOn)}
+          disabled={!runResult}
+          title={t(lang, "splitHint")}
+        >
+          <Columns2 className="size-3.5" />
+          {t(lang, "splitToggle")}
+        </Button>
+        {splitOn && (
+          <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-lg border bg-background/95 px-2 py-1.5 shadow-lg backdrop-blur">
+            <Select value={pickAlgo} onValueChange={(v) => setPickAlgo(v as AlgoKey)}>
+              <SelectTrigger className="h-7 w-32 border text-[11px] font-bold">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectLabel>{t(lang, "algoFamilySup")}</SelectLabel>
+                  {ALGORITHMS.filter((a) => a.supervised).map((a) => (
+                    <SelectItem key={a.key} value={a.key} className="text-xs font-semibold">
+                      {lang === "ar" ? a.ar : a.en}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+                <SelectGroup>
+                  <SelectLabel>{t(lang, "algoFamilyUnsup")}</SelectLabel>
+                  {ALGORITHMS.filter((a) => !a.supervised).map((a) => (
+                    <SelectItem key={a.key} value={a.key} className="text-xs font-semibold">
+                      {lang === "ar" ? a.ar : a.en}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select value={pickSeason} onValueChange={(v) => setPickSeason(v as SeasonKey)}>
+              <SelectTrigger className="h-7 w-28 border text-[11px] font-bold">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="winter" className="text-xs font-semibold">
+                  {t(lang, "seasonWinter")}
+                </SelectItem>
+                <SelectItem value="summer" className="text-xs font-semibold">
+                  {t(lang, "seasonSummer")}
+                </SelectItem>
+                <SelectItem value="full" className="text-xs font-semibold">
+                  {t(lang, "seasonFull")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              className="h-7 gap-1 px-2 text-[11px] font-bold"
+              onClick={loadSideB}
+              disabled={loadingB}
+            >
+              {loadingB ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <span aria-hidden>⇄</span>
+              )}
+              {t(lang, "splitLoad")}
+            </Button>
+            {bErr && (
+              <span className="text-[10px] font-bold text-destructive">{t(lang, "toastRunErr")}</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ---- divider + A/B labels (only with both sides loaded) ---- */}
+      {splitOn && sideB?.mapUrl && showOverlay && (
+        <>
+          <div
+            className="pointer-events-none absolute inset-y-0 z-[6]"
+            style={{ left: `${pos}%` }}
+          >
+            <div className="absolute inset-y-0 w-[2px] -translate-x-1/2 bg-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.4)]" />
+          </div>
+          <button
+            type="button"
+            onPointerDown={onHandleDown}
+            title={t(lang, "splitHint")}
+            aria-label={t(lang, "splitHint")}
+            className="absolute top-1/2 z-[7] flex size-8 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize touch-none items-center justify-center rounded-full border bg-background/95 shadow-lg backdrop-blur"
+            style={{ left: `${pos}%` }}
+          >
+            <ChevronsLeftRight className="size-4" />
+          </button>
+          <div
+            className="absolute top-1/2 z-[5] -translate-y-1/2 whitespace-nowrap rounded-md border bg-background/95 px-1.5 py-1 text-[10px] font-extrabold shadow-lg backdrop-blur"
+            style={{ left: `${Math.max(3, pos - 46)}%` }}
+          >
+            {t(lang, "splitALabel")} · {algoName(runResult?.algorithm)} · {" "}
+            {seasonShort(runResult?.season ?? "winter", runResult?.dateFrom, runResult?.dateTo)}
+          </div>
+          <div
+            className="absolute top-1/2 z-[5] -translate-y-1/2 whitespace-nowrap rounded-md border bg-primary/95 px-1.5 py-1 text-[10px] font-extrabold text-primary-foreground shadow-lg"
+            style={{ left: `${Math.min(97, pos + 4)}%` }}
+          >
+            {t(lang, "splitBLabel")} · {algoName(sideB.algorithm)} · {" "}
+            {seasonShort(sideB.season, sideB.dateFrom, sideB.dateTo)}
+          </div>
+          <p className="pointer-events-none absolute bottom-14 left-1/2 z-[5] -translate-x-1/2 rounded-full bg-background/85 px-2.5 py-1 text-[10px] font-bold text-muted-foreground shadow backdrop-blur">
+            {t(lang, "splitHint")}
+          </p>
+        </>
       )}
     </div>
   );

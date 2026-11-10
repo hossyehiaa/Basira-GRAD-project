@@ -27,6 +27,12 @@ interface BasiraStore {
   setRfTrees: (n: number) => void;
   kClusters: number;
   setKClusters: (n: number) => void;
+  knnK: number;
+  setKnnK: (n: number) => void;
+  mlpHidden: number;
+  setMlpHidden: (n: number) => void;
+  mlpEpochs: number;
+  setMlpEpochs: (n: number) => void;
 
   sampleSetId: number | null; // null = built-in demo samples
   samplePoints: SamplePoint[]; // drawn / uploaded points
@@ -71,6 +77,12 @@ export const useBasira = create<BasiraStore>((set) => ({
   setRfTrees: (n) => set({ rfTrees: n }),
   kClusters: 12,
   setKClusters: (n) => set({ kClusters: n }),
+  knnK: 5,
+  setKnnK: (n) => set({ knnK: n }),
+  mlpHidden: 24,
+  setMlpHidden: (n) => set({ mlpHidden: n }),
+  mlpEpochs: 400,
+  setMlpEpochs: (n) => set({ mlpEpochs: n }),
 
   sampleSetId: null,
   samplePoints: [],

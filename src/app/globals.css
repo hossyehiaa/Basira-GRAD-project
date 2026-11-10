@@ -168,3 +168,20 @@
     radial-gradient(1100px 420px at 70% -10%, oklch(0.72 0.14 155 / 22%), transparent 65%),
     radial-gradient(800px 380px at 15% 110%, oklch(0.78 0.15 85 / 16%), transparent 60%);
 }
+
+/* ---- Print / Save-as-PDF report ------------------------------------------ */
+/* The workspace is hidden while printing; only #print-report is shown. */
+#print-report {
+  display: none;
+}
+@media print {
+  #app-root {
+    display: none !important;
+  }
+  #print-report {
+    display: block !important;
+  }
+  @page {
+    margin: 12mm;
+  }
+}

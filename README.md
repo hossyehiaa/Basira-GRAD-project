@@ -9,8 +9,8 @@
 <p align="center" dir="rtl">
   <b>بصيرة</b> منصة ويب مستقلة تمامًا (خارج Google Earth Engine Apps) لرصد الغطاء الزراعي
   في مدينة برج العرب (~596 كم²) باستخدام صور Sentinel-2 والذكاء الاصطناعي، بواجهة عربية/إنجليزية
-  كاملة تدعم الاتجاه من اليمين لليسار، مع تصنيف موجّه بسبعة خوارزميات، وتصنيف غير موجّه بـ KMeans،
-  ومقارنة دقة فورية، ورسم عينات تدريب على الخريطة أو رفعها كملف CSV.
+  كاملة تدعم الاتجاه من اليمين لليسار، مع تصنيف موجّه بتسع خوارزميات (منها شبكة عصبية MLP والجيران الأقرب k-NN)، وتصنيف غير موجّه بـ KMeans،
+  ومقارنة دقة فورية، ورسم عينات تدريب على الخريطة أو رفعها كملف CSV، ومصفوفة ارتباك تفاعلية، وتقدير المحصول والاحتياج المائي بالفدان، ومقارنة بصرية بين النتائج، وتصدير تقرير شامل PDF.
 </p>
 
 ---
@@ -21,9 +21,13 @@
 |---|---|
 | 🛰 **Sentinel-2 L2A** | `COPERNICUS/S2_SR_HARMONIZED`, SCL cloud masking (excludes classes 1, 3, 8, 9, 10, 11), reflectance ÷ 10 000 |
 | 🌿 **Spectral indices** | NDVI, NDWI, NDMI, EVI + monthly median composites + seasonal NDVI percentiles (p10/p50/p90) |
-| 🤖 **7 supervised classifiers** | Random Forest, SVM, CART, Gradient Tree Boosting, Naive Bayes, Min-Distance (Euclidean), Min-Distance (Mahalanobis) |
+| 🤖 **9 supervised classifiers** | Random Forest, SVM, CART, Gradient Tree Boosting, Naive Bayes, MLP neural network (hybrid), k-NN, Min-Distance (Euclidean), Min-Distance (Mahalanobis) |
 | 🔍 **Unsupervised** | K-Means with adjustable cluster count |
 | ⚖️ **One-click accuracy comparison** | Runs all algorithms, 70/30 split (seed 42), overall accuracy, Kappa, per-class PA / UA / F1 |
+| 🔢 **Confusion matrix** | Interactive matrix per result (green diagonal), included in the PDF report |
+| 🌾 **Yield & water DSS** | Per-class feddan areas with indicative Egyptian yield (tons) and water-requirement (m³) estimates |
+| 🖼 **Split-view comparison** | A/B swipe comparison of any two results (algorithm × season) with a draggable divider |
+| 🖨 **Comprehensive report** | Print / Save-as-PDF report with metrics, class table, confusion matrix and DSS |
 | 🗺 **Interactive map** | Leaflet with farm-plot base layers, true-color / NDVI / NDWI scene tiles, class overlays, click for an NDVI time series |
 | ✏️ **Training samples** | Draw points per crop class on the map, or upload a CSV (`class,lon,lat`) — template included |
 | 🌐 **Bilingual UI** | Full Arabic (RTL) ⇄ English switch, Arabic-first content |

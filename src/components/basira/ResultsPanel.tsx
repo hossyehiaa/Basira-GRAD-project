@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Download, Trophy, History, ClipboardList } from "lucide-react";
+import { Download, Trophy, History, ClipboardList, Printer, Grid3x3, Droplets } from "lucide-react";
 import {
   ChartContainer,
   ChartTooltip,
@@ -29,14 +29,23 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useBasira } from "@/lib/basira/store";
 import { t } from "@/lib/basira/i18n";
 import {
   ALGO_BY_KEY,
+  CLASSES,
   MONTHS_AR,
   MONTHS_EN,
   NDVI_PROFILES,
 } from "@/lib/basira/constants";
+import { CROP_DSS, FEDDAN_PER_KM2 } from "@/lib/basira/agronomy";
 
 interface HistoryRow {
   id: number;
@@ -52,6 +61,7 @@ export function ResultsPanel() {
   const runResult = useBasira((s) => s.runResult);
   const compareResults = useBasira((s) => s.compareResults);
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [cmOpen, setCmOpen] = useState(false);
 
   const loadHistory = () => {
     fetch("/api/runs")
@@ -62,6 +72,30 @@ export function ResultsPanel() {
   useEffect(loadHistory, [runResult, compareResults]);
 
   const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
+
+  // ---- DSS (yield & water) rows from the current result ----
+  const dssRows = (runResult?.classes ?? [])
+    .filter((c) => CROP_DSS[c.code] && CROP_DSS[c.code].yieldTFed > 0)
+    .map((c) => {
+      const dss = CROP_DSS[c.code]!;
+      const feddan = c.areaKm2 * FEDDAN_PER_KM2;
+      return {
+        ...c,
+        feddan,
+        yieldT: feddan * dss.yieldTFed,
+        waterM3: feddan * dss.waterM3Fed,
+      };
+    });
+  const dssTotals = dssRows.reduce(
+    (a, r) => ({
+      feddan: a.feddan + r.feddan,
+      yieldT: a.yieldT + r.yieldT,
+      waterM3: a.waterM3 + r.waterM3,
+    }),
+    { feddan: 0, yieldT: 0, waterM3: 0 }
+  );
+  const fmtInt = (v: number) => Math.round(v).toLocaleString("en-US");
+  const fmt1 = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 1 });
 
   function downloadCsv() {
     if (!runResult) return;
@@ -178,10 +212,22 @@ export function ResultsPanel() {
                 ? t(lang, "seasonFull")
                 : `${runResult.dateFrom ?? ""} → ${runResult.dateTo ?? ""}`}
         </Badge>
-        <Button variant="outline" size="sm" onClick={downloadCsv} className="font-bold">
-          <Download className="size-4" />
-          {t(lang, "dlCsv")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {runResult.confusion && (
+            <Button variant="outline" size="sm" onClick={() => setCmOpen(true)} className="font-bold">
+              <Grid3x3 className="size-4" />
+              {t(lang, "cmOpen")}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => window.print()} className="font-bold">
+            <Printer className="size-4" />
+            {t(lang, "printReport")}
+          </Button>
+          <Button variant="outline" size="sm" onClick={downloadCsv} className="font-bold">
+            <Download className="size-4" />
+            {t(lang, "dlCsv")}
+          </Button>
+        </div>
       </div>
 
       {/* class table */}
@@ -277,11 +323,75 @@ export function ResultsPanel() {
             ))}
           </LineChart>
         </ChartContainer>
+        <p className="mt-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
+          {t(lang, "chartNdviNote")}
+        </p>
       </div>
+
+      {/* DSS — yield & water requirement estimate */}
+      {dssRows.length > 0 && (
+        <div className="rounded-xl border bg-card p-3">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-extrabold text-muted-foreground">
+            <Droplets className="size-3.5" />
+            {t(lang, "dssTitle")}
+          </p>
+          <div className="slim-scroll max-h-72 overflow-auto rounded-lg border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow>
+                  <TableHead className="text-xs">{t(lang, "tableClass")}</TableHead>
+                  <TableHead className="text-xs text-end">{t(lang, "dssFeddan")}</TableHead>
+                  <TableHead className="text-xs text-end">{t(lang, "dssYield")}</TableHead>
+                  <TableHead className="text-xs text-end">{t(lang, "dssWater")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {dssRows.map((r) => (
+                  <TableRow key={r.code}>
+                    <TableCell className="py-2 text-xs font-bold">
+                      <span
+                        className="me-1.5 inline-block size-3 rounded-sm border border-black/20 align-middle"
+                        style={{ backgroundColor: r.color }}
+                      />
+                      {lang === "ar" ? r.ar : r.en}
+                    </TableCell>
+                    <TableCell className="py-2 text-end text-xs font-semibold tabular-nums">
+                      {fmtInt(r.feddan)}
+                    </TableCell>
+                    <TableCell className="py-2 text-end text-xs font-semibold tabular-nums">
+                      {fmt1(r.yieldT)}
+                    </TableCell>
+                    <TableCell className="py-2 text-end text-xs font-semibold tabular-nums">
+                      {fmtInt(r.waterM3)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                <TableRow className="bg-muted/50">
+                  <TableCell className="py-2 text-xs font-extrabold">
+                    {t(lang, "dssTotal")}
+                  </TableCell>
+                  <TableCell className="py-2 text-end text-xs font-extrabold tabular-nums">
+                    {fmtInt(dssTotals.feddan)}
+                  </TableCell>
+                  <TableCell className="py-2 text-end text-xs font-extrabold tabular-nums">
+                    {fmt1(dssTotals.yieldT)}
+                  </TableCell>
+                  <TableCell className="py-2 text-end text-xs font-extrabold tabular-nums">
+                    {fmtInt(dssTotals.waterM3)}
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+          <p className="mt-2 text-[11px] font-semibold leading-relaxed text-muted-foreground">
+            {t(lang, "dssNote")}
+          </p>
+        </div>
+      )}
 
       {/* comparison */}
       {compareResults && compareResults.length > 0 && (
-        <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
+        <div id="compare-block" className="scroll-mt-24 rounded-xl border-2 border-primary/40 bg-card p-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-extrabold text-muted-foreground">
               {t(lang, "chartAccTitle")}
@@ -366,6 +476,69 @@ export function ResultsPanel() {
           </ul>
         )}
       </div>
+
+      {/* confusion-matrix dialog */}
+      <Dialog open={cmOpen} onOpenChange={setCmOpen}>
+        <DialogContent className="max-w-2xl" dir={lang === "ar" ? "rtl" : "ltr"}>
+          <DialogHeader>
+            <DialogTitle>{t(lang, "cmTitle")}</DialogTitle>
+            <DialogDescription>{t(lang, "cmNote")}</DialogDescription>
+          </DialogHeader>
+          {runResult.confusion ? (
+            <div className="slim-scroll max-h-[60vh] overflow-auto rounded-lg border">
+              <Table>
+                <TableHeader className="sticky top-0 bg-card">
+                  <TableRow>
+                    <TableHead className="text-xs">
+                      {t(lang, "cmActual")} \ {t(lang, "cmPredicted")}
+                    </TableHead>
+                    {runResult.confusion.classIds.map((id) => {
+                      const c = CLASSES.find((x) => x.id === id);
+                      return (
+                        <TableHead key={id} className="text-center text-[11px]">
+                          {c ? (lang === "ar" ? c.ar : c.en) : id}
+                        </TableHead>
+                      );
+                    })}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {runResult.confusion.rows.map((row, i) => {
+                    const actual = CLASSES.find((x) => x.id === runResult.confusion!.classIds[i]);
+                    return (
+                      <TableRow key={i}>
+                        <TableCell className="whitespace-nowrap text-xs font-bold">
+                          <span
+                            className="me-1.5 inline-block size-3 rounded-sm border border-black/20 align-middle"
+                            style={{ backgroundColor: actual?.color ?? "#888" }}
+                          />
+                          {actual ? (lang === "ar" ? actual.ar : actual.en) : runResult.confusion!.classIds[i]}
+                        </TableCell>
+                        {row.map((n, j) => (
+                          <TableCell
+                            key={j}
+                            className={
+                              i === j
+                                ? "bg-emerald-500/15 text-center text-xs font-extrabold tabular-nums text-emerald-700 dark:text-emerald-300"
+                                : n > 0
+                                  ? "bg-destructive/10 text-center text-xs font-semibold tabular-nums text-destructive dark:text-red-300"
+                                  : "text-center text-xs tabular-nums text-muted-foreground/50"
+                            }
+                          >
+                            {n}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">{t(lang, "cmEmpty")}</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
