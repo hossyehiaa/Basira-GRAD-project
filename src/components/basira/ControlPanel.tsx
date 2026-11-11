@@ -87,10 +87,11 @@ export function ControlPanel() {
     let days = 0;
     if (store.season === "custom") {
       if (!store.dateFrom || !store.dateTo || store.dateFrom >= store.dateTo) return null;
-      days =
-        Math.round(
-          (new Date(store.dateTo).getTime() - new Date(store.dateFrom).getTime()) / 86400000
-        ) + 1;
+      const ms =
+        new Date(store.dateTo).getTime() - new Date(store.dateFrom).getTime();
+      // malformed ISO strings parse to NaN — never let that reach the badge
+      if (!Number.isFinite(ms)) return null;
+      days = Math.round(ms / 86400000) + 1;
     } else if (store.season === "winter") days = 181;
     else if (store.season === "summer") days = 184;
     else days = 365;

@@ -35,9 +35,36 @@ function benchmarkRows(): Row[] {
     en: a.en,
     ar: a.ar,
     supervised: a.supervised,
-    oa: a.demoOa,
-    kappa: a.demoKappa,
+    oa: Number.isFinite(a.demoOa) ? a.demoOa : 0,
+    kappa: Number.isFinite(a.demoKappa) ? a.demoKappa : 0,
   })).sort((x, y) => y.oa - x.oa);
+}
+
+/**
+ * Sanitize rows coming from the network: the renderer calls `.toFixed` on
+ * oa/kappa, so any malformed/missing value must be coerced to a finite
+ * number BEFORE it reaches the table (guards against API shape drift and
+ * the "custom season" crash where oa/kappa were undefined).
+ */
+function sanitizeRows(input: unknown): Row[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((raw): Row | null => {
+      const r = raw as Record<string, unknown>;
+      const algorithm = typeof r?.algorithm === "string" ? r.algorithm : "";
+      if (!algorithm) return null;
+      const oa = Number(r?.oa);
+      const kappa = Number(r?.kappa);
+      return {
+        algorithm,
+        en: typeof r?.en === "string" ? r.en : algorithm,
+        ar: typeof r?.ar === "string" ? r.ar : algorithm,
+        supervised: Boolean(r?.supervised),
+        oa: Number.isFinite(oa) ? Math.min(1, Math.max(0, oa)) : 0,
+        kappa: Number.isFinite(kappa) ? Math.min(1, Math.max(-1, kappa)) : 0,
+      };
+    })
+    .filter((r): r is Row => r !== null);
 }
 
 export function AlgorithmsSection() {
@@ -54,7 +81,7 @@ export function AlgorithmsSection() {
         const r = await fetch(`/api/algorithms?season=${season}`);
         if (!r.ok) return;
         const d = await r.json();
-        const fresh: Row[] = d.algorithms ?? [];
+        const fresh = sanitizeRows(d?.algorithms);
         if (!cancelled && fresh.length > 0) setRows(fresh);
       } catch {
         /* keep the benchmark table — never a blank/hanging state */

@@ -1,11 +1,14 @@
 import type { NextConfig } from "next";
 
 // `output: standalone` is only wanted for local/self-hosted Docker-style runs.
-// Netlify's Next runtime builds the standard .next output, so we disable it there.
-const isNetlify = Boolean(process.env.NETLIFY || process.env.NETLIFY_LOCAL);
+// Netlify's Next runtime and Vercel both build the standard .next output
+// (each platform sets its own build env flag), so standalone is disabled there.
+const isManagedBuild = Boolean(
+  process.env.NETLIFY || process.env.NETLIFY_LOCAL || process.env.VERCEL
+);
 
 const nextConfig: NextConfig = {
-  ...(isNetlify ? {} : { output: "standalone" as const }),
+  ...(isManagedBuild ? {} : { output: "standalone" as const }),
   typescript: {
     ignoreBuildErrors: true,
   },

@@ -86,15 +86,48 @@ const DEFAULT_AOI: AoiState = {
   bbox: null,
 };
 
+/** Safe custom-period defaults — a complete, real-data winter season. */
+export const DEFAULT_DATE_FROM = "2025-11-01";
+export const DEFAULT_DATE_TO = "2026-04-30";
+
+/** A date range is usable only when both ends are valid ISO days in order. */
+export function isValidRange(
+  from: unknown,
+  to: unknown
+): from is string {
+  return (
+    typeof from === "string" &&
+    typeof to === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(from) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(to) &&
+    from < to &&
+    !Number.isNaN(new Date(from).getTime()) &&
+    !Number.isNaN(new Date(to).getTime())
+  );
+}
+
 export const useBasira = create<BasiraStore>((set) => ({
   lang: "ar",
   setLang: (l) => set({ lang: l }),
 
   season: "winter",
-  setSeason: (s) => set({ season: s }),
-  dateFrom: "2024-11-01",
-  dateTo: "2025-04-30",
-  setDate: (from, to) => set({ dateFrom: from, dateTo: to }),
+  // Entering "custom" always finds a valid range: if the stored dates were
+  // cleared or corrupted, the safe defaults are restored on the switch.
+  setSeason: (s) =>
+    set((st) => ({
+      season: s,
+      ...(s === "custom" && !isValidRange(st.dateFrom, st.dateTo)
+        ? { dateFrom: DEFAULT_DATE_FROM, dateTo: DEFAULT_DATE_TO }
+        : {}),
+    })),
+  dateFrom: DEFAULT_DATE_FROM,
+  dateTo: DEFAULT_DATE_TO,
+  setDate: (from, to) =>
+    set({
+      // never persist null/undefined — fall back to the previous safe value
+      dateFrom: from || DEFAULT_DATE_FROM,
+      dateTo: to || DEFAULT_DATE_TO,
+    }),
 
   // signature (instant scan) by default: works immediately with zero samples.
   // Supervised algorithms become available once samples are drawn/uploaded.
