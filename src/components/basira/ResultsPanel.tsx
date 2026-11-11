@@ -2,7 +2,7 @@
 // Results panel (v1.3 — tabbed): areas & accuracy, interactive confusion
 // matrix heatmap, yield & water DSS, NDVI phenology, algorithm comparison,
 // CSV export, run history.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -135,6 +135,21 @@ export function ResultsPanel() {
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  /* Summer↔winter transition windows (mid-month Apr/May or Oct/Nov): most
+   * fields are harvested/bare, so the instant scan's bare-land separation is
+   * limited — surface an explicit agronomic note instead of silent confusion.
+   * (Computed before the null early-return to keep hook order stable.) */
+  const isTransition = useMemo(() => {
+    const d1 = runResult?.dateFrom ?? "";
+    const d2 = runResult?.dateTo ?? "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d1) || !/^\d{4}-\d{2}-\d{2}$/.test(d2)) return false;
+    const a = new Date(d1).getTime();
+    const b = new Date(d2).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return false;
+    const midMonth = new Date((a + b) / 2).getMonth() + 1;
+    return [4, 5, 10, 11].includes(midMonth);
+  }, [runResult?.dateFrom, runResult?.dateTo]);
 
   if (!runResult) {
     return (
@@ -275,6 +290,14 @@ export function ResultsPanel() {
         <div className="flex items-start gap-2 rounded-xl border border-primary/40 bg-primary/10 p-3 text-[11px] font-bold leading-relaxed text-primary">
           <Zap className="mt-0.5 size-3.5 shrink-0" />
           <span>{t(lang, "instantEstimateWarn")}</span>
+        </div>
+      )}
+
+      {/* season-transition window note (harvest + sowing period) */}
+      {isTransition && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/60 bg-amber-500/10 p-3 text-[11px] font-bold leading-relaxed text-amber-700 dark:text-amber-400">
+          <span aria-hidden>⚠</span>
+          <span>{t(lang, "transitionNote")}</span>
         </div>
       )}
 

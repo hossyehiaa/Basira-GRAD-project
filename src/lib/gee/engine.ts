@@ -301,9 +301,10 @@ export const SIG_SCALES = [0.18, 0.2, 0.22, 0.22, 0.15, 0.1, 0.07, 0.12, 0.11];
 
 /** Reference signatures per class id — [NDVI_mean, p10, p90, NDWI, NDMI, B4, B8, B11, B12].
  *  Calibrated against measured Sentinel-2 feature distributions over Borj El
- *  Arab (scripts/probe_signatures.ts + scripts/diag_signatures.ts): bright
- *  sandy desert (B4≈0.36, B11≈0.48), vegetation NDWI(G,NIR) ≈ −0.55, water
- *  NDWI ≈ +0.5 with dark NIR. Winter = Nov–Apr, Summer = May–Oct. */
+ *  Arab (scripts/probe_signatures.ts + probe_october.cjs): bright sandy bare
+ *  fields (B4≈0.30, B11≈0.44) are الفلاح/fallow, while real towns are darker
+ *  in red/SWIR with tree-driven NDVI≈0.22 (B4≈0.24, B11≈0.37). Winter =
+ *  Nov–Apr, Summer = May–Oct. */
 export const SIGNATURES: Record<"winter" | "summer", Record<number, number[]>> = {
   winter: {
     1:  [0.52, 0.20, 0.80, -0.54, 0.21, 0.11, 0.40, 0.24, 0.155], // WHT peaks Feb–Mar
@@ -315,8 +316,8 @@ export const SIGNATURES: Record<"winter" | "summer", Record<number, number[]>> =
     7:  [0.46, 0.23, 0.70, -0.51, 0.17, 0.135, 0.37, 0.265, 0.18], // FBA
     8:  [0.15, 0.08, 0.24, -0.31, 0.01, 0.22, 0.37, 0.35, 0.28], // SUN off-season (inactive)
     9:  [0.60, 0.47, 0.75, -0.58, 0.26, 0.095, 0.43, 0.245, 0.15], // ORC evergreen, stable
-    10: [0.11, 0.07, 0.16, -0.24, -0.02, 0.35, 0.44, 0.47, 0.40], // FLW bright desert/bare
-    11: [0.13, 0.08, 0.18, -0.25, -0.06, 0.28, 0.40, 0.33, 0.26], // URB towns, darker SWIR
+    10: [0.11, 0.08, 0.16, -0.25, -0.06, 0.30, 0.37, 0.44, 0.36], // FLW bright/dry bare sand (measured)
+    11: [0.22, 0.16, 0.28, -0.32, -0.01, 0.25, 0.36, 0.38, 0.31], // URB towns — brighter B4/B8/B12 than dark bare fields (measured)
     12: [-0.30, -0.45, -0.12, 0.45, -0.03, 0.07, 0.04, 0.03, 0.02], // WTR dark NIR, +NDWI
   },
   summer: {
@@ -329,9 +330,25 @@ export const SIGNATURES: Record<"winter" | "summer", Record<number, number[]>> =
     7:  [0.13, 0.07, 0.22, -0.30, 0.00, 0.23, 0.38, 0.36, 0.29], // FBA off-season (inactive)
     8:  [0.44, 0.22, 0.72, -0.52, 0.19, 0.12, 0.39, 0.26, 0.17], // SUN
     9:  [0.60, 0.47, 0.75, -0.58, 0.26, 0.095, 0.43, 0.245, 0.15], // ORC
-    10: [0.11, 0.07, 0.16, -0.24, -0.02, 0.35, 0.44, 0.47, 0.40], // FLW
-    11: [0.13, 0.08, 0.18, -0.25, -0.06, 0.28, 0.40, 0.33, 0.26], // URB
+    10: [0.11, 0.08, 0.16, -0.25, -0.06, 0.30, 0.37, 0.44, 0.36], // FLW bright/dry bare sand (measured)
+    11: [0.22, 0.16, 0.28, -0.32, -0.01, 0.25, 0.36, 0.38, 0.31], // URB towns — brighter B4/B8/B12 than dark bare fields (measured)
     12: [-0.30, -0.45, -0.12, 0.45, -0.03, 0.07, 0.04, 0.03, 0.02], // WTR
+  },
+};
+
+/** Additional per-class signature VARIANTS — bare agricultural land is
+ *  spectrally bimodal: bright dry sand fields vs dark wet/harvested-stubble
+ *  fields. Class 10 (بور) competes with BOTH signatures, so a pixel is
+ *  labelled fallow when EITHER is nearest — this stops dark bare fields
+ *  from collapsing into the urban class in transition windows.
+ *  Dark-variant values measured Oct 2026 over Borj El Arab farms
+ *  (scripts/probe_october.mjs + ESA WorldCover cross-check). */
+export const SIGNATURE_VARIANTS: Record<"winter" | "summer", Record<number, number[][]>> = {
+  winter: {
+    10: [[0.19, 0.14, 0.26, -0.30, -0.04, 0.22, 0.34, 0.36, 0.29]], // dark wet/stubble bare fields
+  },
+  summer: {
+    10: [[0.19, 0.14, 0.26, -0.30, -0.04, 0.22, 0.34, 0.36, 0.29]], // dark wet/stubble bare fields
   },
 };
 
@@ -348,8 +365,8 @@ export const ACTIVE_SIGNATURE_CLASSES: Record<"winter" | "summer" | "full", numb
  *  0..1). Applied as a MAP-style distance bonus so the instant estimate does
  *  not scatter the spectrally similar crop mass into minor classes. */
 export const SIG_PRIORS: Record<"winter" | "summer", Record<number, number>> = {
-  winter: { 1: 0.95, 4: 0.85, 5: 0.3, 6: 0.55, 7: 0.35, 9: 0.65, 10: 0.85, 11: 0.75, 12: 0.45 },
-  summer: { 2: 0.9, 3: 0.6, 4: 0.3, 5: 0.35, 8: 0.5, 9: 0.65, 10: 0.85, 11: 0.75, 12: 0.45 },
+  winter: { 1: 0.95, 4: 0.85, 5: 0.3, 6: 0.55, 7: 0.35, 9: 0.65, 10: 0.85, 11: 0.5, 12: 0.45 },
+  summer: { 2: 0.9, 3: 0.6, 4: 0.3, 5: 0.35, 8: 0.5, 9: 0.65, 10: 0.85, 11: 0.5, 12: 0.45 },
 };
 /** prior bonus strength (squared-distance units) */
 export const SIG_PRIOR_LAMBDA = 1.2;
@@ -370,6 +387,26 @@ function seasonalSignature(classId: number, season: "winter" | "summer" | "full"
   if (season === "winter") return w;
   if (season === "summer") return s;
   return w.map((v, i) => (v + s[i]) / 2);
+}
+
+/** All competing signatures for a class in a season: the primary plus any
+ *  bimodal variants ("full" season averages the seasonal variants). */
+function variantsOf(classId: number, season: "winter" | "summer" | "full"): number[][] {
+  const primary = seasonalSignature(classId, season);
+  if (season === "full") {
+    const w = SIGNATURE_VARIANTS.winter[classId] ?? [];
+    const s = SIGNATURE_VARIANTS.summer[classId] ?? [];
+    if (!w.length || !s.length) return [primary];
+    const out: number[][] = [];
+    const n = Math.max(w.length, s.length);
+    for (let i = 0; i < n; i++) {
+      const a = w[i % w.length];
+      const b = s[i % s.length];
+      out.push(a.map((v, k) => (v + b[k]) / 2));
+    }
+    return [primary, ...out];
+  }
+  return [primary, ...(SIGNATURE_VARIANTS[season][classId] ?? [])];
 }
 
 /** Which reference season fits a date range (≥10 months → full-year). */
@@ -396,24 +433,34 @@ function signatureFeatures(s2: any): any {
 }
 
 /** Nearest-reference-signature classification (instant scan, no samples).
- *  Only the season's active classes (crop calendar) compete for pixels. */
+ *  Only the season's active classes (crop calendar) compete for pixels.
+ *  Each class competes through one OR MORE signature variants (bimodal
+ *  bare land); the winning band's owning class labels the pixel. */
 export function signatureClassifyImage(sigFeats: any, season: "winter" | "summer" | "full"): any {
   const x = sigFeats.select(SIG_FEATURES as unknown as string[]);
   const scales = ee.Image.constant(SIG_SCALES);
   const active = ACTIVE_SIGNATURE_CLASSES[season];
-  const dists = active.map((classId) =>
-    x
-      .subtract(ee.Image.constant(seasonalSignature(classId, season)))
-      .divide(scales)
-      .pow(2)
-      .reduce(ee.Reducer.sum())
-      // MAP-style prevalence bonus: dominant regional crops win spectral ties
-      .subtract(SIG_PRIOR_LAMBDA * priorOf(classId, season))
-      .rename(`d${classId}`)
-  );
+  // one distance band per (class, variant); band → owning class
+  const owner: number[] = [];
+  const dists: any[] = [];
+  for (const classId of active) {
+    for (const sig of variantsOf(classId, season)) {
+      dists.push(
+        x
+          .subtract(ee.Image.constant(sig))
+          .divide(scales)
+          .pow(2)
+          .reduce(ee.Reducer.sum())
+          // MAP-style prevalence bonus: dominant regional classes win spectral ties
+          .subtract(SIG_PRIOR_LAMBDA * priorOf(classId, season))
+          .rename(`d${classId}_${owner.length}`)
+      );
+      owner.push(classId);
+    }
+  }
   let distImg = dists[0];
   for (let i = 1; i < dists.length; i++) distImg = distImg.addBands(dists[i]);
-  // argmin over the active-class distance bands (first index wins ties)
+  // argmin over all candidate bands (first index wins ties)
   let arg = ee.Image(0).rename("argmin");
   let best = distImg.select(0);
   for (let k = 1; k < dists.length; k++) {
@@ -421,9 +468,9 @@ export function signatureClassifyImage(sigFeats: any, season: "winter" | "summer
     arg = arg.where(cur.lt(best), ee.Image.constant(k));
     best = best.min(cur);
   }
-  let out = ee.Image.constant(active[0]).rename("classification");
-  for (let k = 1; k < active.length; k++) {
-    out = out.where(arg.eq(k), ee.Image.constant(active[k]));
+  let out = ee.Image.constant(owner[0]).rename("classification");
+  for (let k = 1; k < owner.length; k++) {
+    out = out.where(arg.eq(k), ee.Image.constant(owner[k]));
   }
   return out;
 }

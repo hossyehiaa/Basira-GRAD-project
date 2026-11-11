@@ -178,6 +178,8 @@ export const STR_AR = {
   instantBadge: "فحص فوري",
   instantEstimateWarn:
     "هذه نتيجة فحص فوري تقديرية (مطابقة البصمة الطيفية بدون عينات) — لا تُحسب دقة OA/Kappa هنا. للحصول على دقة مقيسة ارسم عينات تدريب ثم شغّل خوارزمية موجّهة.",
+  transitionNote:
+    "الفترة المختارة تقع في موسم الانتقال بين الصيفي والشتوي (حصاد وبذر) — معظم الحقول تكون جرداء/محصودة في هذا التوقيت، لذا من الطبيعي أن ترتفع نسبة الأرض البور. التفرقة الطيفية بين الأرض الجرداء والعمران محدودة في الفحص الفوري — جرّب موسمًا كاملًا أو أضف عينات تدريب لتصنيف أدق.",
 
   // algorithms section
   algoTitle: "الخوارزميات ومقارنة الدقة",
@@ -419,6 +421,8 @@ export const STR_EN: Record<StrKey, string> = {
   instantBadge: "Instant scan",
   instantEstimateWarn:
     "This is an instant-scan estimate (spectral signature matching without samples) — no OA/Kappa is computed here. To get measured accuracy, draw training samples and run a supervised algorithm.",
+  transitionNote:
+    "The selected window falls in the summer↔winter transition (harvest + sowing) — most fields are bare/harvested at this time, so a high fallow share is agronomically expected. Spectral separation between bare soil and urban is limited for the instant scan — try a full season or add training samples for a sharper classification.",
 
   algoTitle: "Algorithms & accuracy comparison",
   algoSubtitle:
