@@ -103,6 +103,14 @@ export interface RunPayload {
   aoiAreaFeddans?: number | null;
   /** label of the scanned AOI */
   aoiName?: string | null;
+  /** how the training set was built ("auto" = zero-click spectral anchors) */
+  sampleSource?: "manual" | "auto" | null;
+  /** engine note codes: instant_estimate | auto_sample_failed | ... */
+  noteCode?: string | null;
+  /** anchor pixel count behind an auto-sampled run */
+  autoSampleN?: number | null;
+  /** number of classes the anchors covered */
+  autoSampleClasses?: number | null;
 }
 
 export interface SamplePoint {

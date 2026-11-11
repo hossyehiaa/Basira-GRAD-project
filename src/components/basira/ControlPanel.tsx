@@ -24,7 +24,7 @@ import { useScanRunner } from "@/hooks/use-scan";
 import { useBasira, type AoiState } from "@/lib/basira/store";
 import { t } from "@/lib/basira/i18n";
 import { ALGORITHMS, SIGNATURE_ALGO } from "@/lib/basira/constants";
-import { FEDDAN_PER_KM2 as FEDDAN } from "@/lib/basira/agronomy";
+import { fmtAreaTotal, fmtFeddans } from "@/lib/basira/area";
 import {
   circleRing,
   bboxRing,
@@ -194,9 +194,7 @@ export function ControlPanel() {
         </p>
         {!store.aoi.isDefault && store.aoi.areaKm2 != null && (
           <p className="mt-1 font-mono text-xs font-semibold text-muted-foreground">
-            {t(lang, "aoiAreaLabel")}: {store.aoi.areaKm2.toFixed(2)} {t(lang, "km2Unit")} ·{" "}
-            {Math.round(store.aoi.areaKm2 * FEDDAN).toLocaleString("en-US")}{" "}
-            {t(lang, "feddanUnit")}
+            {t(lang, "aoiAreaLabel")}: {fmtAreaTotal(store.aoi.areaKm2, lang)}
           </p>
         )}
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t(lang, "aoiNote")}</p>
@@ -300,7 +298,7 @@ export function ControlPanel() {
                   inputMode="decimal"
                   value={
                     Number.isFinite(num(cRadiusKm)) && num(cRadiusKm) > 0
-                      ? Math.round(Math.PI * num(cRadiusKm) ** 2 * FEDDAN).toLocaleString("en-US")
+                      ? fmtFeddans(Math.PI * num(cRadiusKm) ** 2)
                       : "—"
                   }
                   readOnly
@@ -331,8 +329,7 @@ export function ControlPanel() {
 
           {candidateAreaKm2?.ok && (
             <p className="mt-2 font-mono text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-              {t(lang, "aoiAreaLabel")}: {candidateAreaKm2.areaKm2.toFixed(2)} {t(lang, "km2Unit")} ·{" "}
-              {Math.round(candidateAreaKm2.areaKm2 * FEDDAN).toLocaleString("en-US")} {t(lang, "feddanUnit")}
+              {t(lang, "aoiAreaLabel")}: {fmtAreaTotal(candidateAreaKm2.areaKm2, lang)}
             </p>
           )}
           {coordErr && (
@@ -636,6 +633,12 @@ export function ControlPanel() {
                 : t(lang, "samplesDefault")}
             </span>
           </p>
+          {ALGORITHMS.find((a) => a.key === store.algorithm)?.supervised &&
+            store.samplePoints.length < 20 && (
+              <p className="mt-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 p-2 text-[11px] font-semibold leading-relaxed text-emerald-700 dark:text-emerald-400">
+                {t(lang, "autoSampleHint")}
+              </p>
+            )}
         </div>
       </section>
 

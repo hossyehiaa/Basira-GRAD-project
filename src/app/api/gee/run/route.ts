@@ -77,9 +77,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ kind: "run", result });
   } catch (e) {
     const code = e instanceof GEEError ? e.code : "run_failed";
-    console.error("gee run error", code, (e as Error)?.message?.slice(0, 300));
+    console.error(
+      "gee run error", code,
+      String((e as Error)?.message ?? e).slice(0, 500)
+    );
     return NextResponse.json(
-      { error: code, message: String((e as Error)?.message || "").slice(0, 300) },
+      { error: code, message: String((e as Error)?.message || e || "").slice(0, 300) },
       { status: e instanceof GEEError ? 400 : 500 }
     );
   }

@@ -179,7 +179,17 @@ export const STR_AR = {
   instantEstimateWarn:
     "هذه نتيجة فحص فوري تقديرية (مطابقة البصمة الطيفية بدون عينات) — لا تُحسب دقة OA/Kappa هنا. للحصول على دقة مقيسة ارسم عينات تدريب ثم شغّل خوارزمية موجّهة.",
   transitionNote:
-    "الفترة المختارة تقع في موسم الانتقال بين الصيفي والشتوي (حصاد وبذر) — معظم الحقول تكون جرداء/محصودة في هذا التوقيت، لذا من الطبيعي أن ترتفع نسبة الأرض البور. التفرقة الطيفية بين الأرض الجرداء والعمران محدودة في الفحص الفوري — جرّب موسمًا كاملًا أو أضف عينات تدريب لتصنيف أدق.",
+    "ملاحظة: الفترة المحددة تقع في موسم الانتقال الزراعي، من الطبيعي ظهور نسبة عالية من الأراضي البور أو قيد التجهيز. معظم الحقول تكون محصودة/جرداء في هذا التوقيت — جرّب موسمًا كاملًا أو أضف عينات تدريب لتصنيف أدق.",
+
+  // zero-click auto-sampling (الاستخراج التلقائي للعينات)
+  autoSampleBadge: "استخراج تلقائي للعينات",
+  autoSampleNote:
+    "لا توجد عينات يدوية — استخرج المحرك {n} بكسل تدريب من {c} فئة داخل المنطقة المحددة بقواعد البصمة الطيفية المُعايرة (NDVI/NDWI/NDBI/SWIR)، ثم درّب الخوارزمية على تقسيم ٧٠٪ تدريب / ٣٠٪ تحقق — القياسات أدناه محسوبة فعليًا على عينة التحقق المحتجزة.",
+  autoSampleHint:
+    "بدون عينات يدوية؟ عند التشغيل يستخرج المحرك عينات تدريب طيفية تلقائيًا من داخل المنطقة المحددة ويقيس الدقة على ٣٠٪ تحقق — لا حاجة لرسم نقاط.",
+  autoSampleToast: "استخراج تلقائي للعينات: {n} بكسل عبر {c} فئة",
+  autoFallbackNote:
+    "تعذّر استخراج عينات طيفية عالية الثقة لهذه الفترة (تغطية سحابية محتملة) — عُرض فحص فوري تقديري بدلًا من التصنيف الموجّه. جرّب فترة أطول أو أضف عينات يدوية.",
 
   // algorithms section
   algoTitle: "الخوارزميات ومقارنة الدقة",
@@ -422,7 +432,17 @@ export const STR_EN: Record<StrKey, string> = {
   instantEstimateWarn:
     "This is an instant-scan estimate (spectral signature matching without samples) — no OA/Kappa is computed here. To get measured accuracy, draw training samples and run a supervised algorithm.",
   transitionNote:
-    "The selected window falls in the summer↔winter transition (harvest + sowing) — most fields are bare/harvested at this time, so a high fallow share is agronomically expected. Spectral separation between bare soil and urban is limited for the instant scan — try a full season or add training samples for a sharper classification.",
+    "Note: the selected period falls in the agricultural transition season — a high share of fallow or preparing land is perfectly normal. Most fields are harvested/bare at this time — try a full season or add training samples for a sharper classification.",
+
+  // zero-click auto-sampling
+  autoSampleBadge: "Auto-sampled training",
+  autoSampleNote:
+    "No manual samples — the engine extracted {n} training pixels across {c} classes inside the selected area using the calibrated spectral rules (NDVI/NDWI/NDBI/SWIR), then trained the algorithm on a 70% train / 30% validation split — the metrics below are measured on the withheld validation set.",
+  autoSampleHint:
+    "No manual points? On run, the engine auto-extracts spectral training samples inside your selected area and measures accuracy on a 30% holdout — no point-drawing required.",
+  autoSampleToast: "Auto-sampling: {n} pixels across {c} classes",
+  autoFallbackNote:
+    "Not enough high-confidence spectral anchors for this window (possible cloud cover) — an instant estimate is shown instead of the supervised run. Try a longer period or add manual samples.",
 
   algoTitle: "Algorithms & accuracy comparison",
   algoSubtitle:

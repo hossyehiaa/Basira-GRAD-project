@@ -22,6 +22,7 @@ import type { AlgoKey, RunPayload } from "@/lib/basira/types";
 
 /** Map a live engine result to the store payload shape. */
 export function liveToPayload(r: RunResult): RunPayload {
+  const autoCounts = r.sampleClassCounts ?? null;
   return {
     mode: "live",
     algorithm: r.algorithm,
@@ -50,6 +51,12 @@ export function liveToPayload(r: RunResult): RunPayload {
     nVal: r.nVal,
     aoiAreaKm2: r.areaKm2 ?? null,
     aoiName: r.aoiName ?? null,
+    sampleSource: r.sampleSource ?? null,
+    noteCode: r.noteCode ?? null,
+    autoSampleN: autoCounts
+      ? Object.values(autoCounts).reduce((s: number, v) => s + Number(v || 0), 0)
+      : null,
+    autoSampleClasses: autoCounts ? Object.keys(autoCounts).length : null,
   };
 }
 
@@ -102,12 +109,28 @@ export function useScanRunner() {
           if (res.kind !== "run") throw new Error("bad_kind");
           const run = liveToPayload(res.result);
           store.setRunResult(run);
+          // keep the AOI chip and the results chip on the exact same area number
+          const st = useBasira.getState();
+          if (
+            run.aoiAreaKm2 != null &&
+            run.aoiAreaKm2 > 0 &&
+            !st.aoi.isDefault &&
+            Math.abs((st.aoi.areaKm2 ?? 0) - run.aoiAreaKm2) > 1e-9
+          ) {
+            st.setAoi({ ...st.aoi, areaKm2: run.aoiAreaKm2 });
+          }
           toast({
             title: t(lang, "toastRunOk"),
             description:
-              run.oa == null
-                ? `${t(lang, "metricImages")}: ${run.nImages ?? "—"}`
-                : `${t(lang, "metricOa")}: ${(run.oa * 100).toFixed(1)}% · ${t(lang, "metricImages")}: ${run.nImages ?? "—"}`,
+              run.sampleSource === "auto" && run.autoSampleN
+                ? `${t(lang, "autoSampleToast")
+                    .replace("{n}", String(run.autoSampleN))
+                    .replace("{c}", String(run.autoSampleClasses ?? 0))}${
+                    run.oa != null ? ` · OA ${(run.oa * 100).toFixed(1)}%` : ""
+                  }`
+                : run.oa == null
+                  ? `${t(lang, "metricImages")}: ${run.nImages ?? "—"}`
+                  : `${t(lang, "metricOa")}: ${(run.oa * 100).toFixed(1)}% · ${t(lang, "metricImages")}: ${run.nImages ?? "—"}`,
           });
         } else {
           const res = await fetch("/api/runs", {
@@ -155,8 +178,10 @@ export function useScanRunner() {
     [toast]
   );
 
-  /** Compare all algorithms. With no training samples (instant scan mode)
-   *  this falls back to the pre-computed benchmark league table. */
+  /** Compare all algorithms. Zero-click: in live mode the engine auto-extracts
+   *  spectral anchor samples when no manual points exist, so every supervised
+   *  algorithm gets MEASURED OA/Kappa. The demo benchmark fallback only runs
+   *  when Earth Engine is not configured. */
   const compareAll = useCallback(async () => {
     const store = useBasira.getState();
     const lang = store.lang;
@@ -170,10 +195,9 @@ export function useScanRunner() {
       const aoiName = store.aoi.isDefault ? undefined : store.aoi.name;
       const aoiAreaKm2 =
         !store.aoi.isDefault && store.aoi.areaKm2 != null ? store.aoi.areaKm2 : undefined;
-      const hasSamples = store.samplePoints.length >= 20;
 
       const health = await getGeeHealth();
-      if (health.mode === "live" && hasSamples) {
+      if (health.mode === "live") {
         const res = await submitGeeJob(
           {
             kind: "compare",
@@ -217,12 +241,18 @@ export function useScanRunner() {
         const done = res.summary.filter((s: CompareSummaryRow) => s.oa != null).length;
         toast({
           title: t(lang, "toastCompareOk"),
-          description: t(lang, "compareDoneCount")
-            .replace("{n}", String(done))
-            .replace("{total}", String(res.summary.length)),
+          description: best.sampleSource === "auto" && best.autoSampleN
+            ? `${t(lang, "autoSampleToast")
+                .replace("{n}", String(best.autoSampleN))
+                .replace("{c}", String(best.autoSampleClasses ?? 0))} — ${t(lang, "compareDoneCount")
+                .replace("{n}", String(done))
+                .replace("{total}", String(res.summary.length))}`
+            : t(lang, "compareDoneCount")
+                .replace("{n}", String(done))
+                .replace("{total}", String(res.summary.length)),
         });
       } else {
-        // instant-scan mode (no samples): reference benchmark comparison
+        // demo mode (no Earth Engine key): reference benchmark comparison
         const results: RunPayload[] = [];
         for (const algo of ALGORITHMS) {
           const res = await fetch("/api/runs", {

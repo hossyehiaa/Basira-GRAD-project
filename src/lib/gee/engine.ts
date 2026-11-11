@@ -42,6 +42,10 @@ const NDWI_PALETTE = "8c510a,d8b365,f6e8c3,c7eae5,5ab4ac,01665e";
 
 // Simplified Borj El Arab boundary — same polygon as the phase-1 app
 import { BORJ_COORDS } from "./aoi";
+// Turf-style geodesic polygon area — the IDENTICAL formula the client (geo.ts)
+// uses and PostGIS ST_Area(geography) cross-checks, so the total area shown in
+// every panel is the same number (single source of truth).
+import { polygonAreaKm2, type LonLat } from "../basira/geo";
 
 export type SeasonKey = "winter" | "summer" | "full" | "custom";
 export type PeriodInput = {
@@ -135,6 +139,11 @@ export interface RunResult {
   areaKm2: number;
   /** label of the AOI the run was executed on */
   aoiName?: string | null;
+  /** how the training set was built: user points ("manual") or zero-click
+   *  stratified spectral anchors ("auto" = الاستخراج التلقائي للعينات) */
+  sampleSource?: "manual" | "auto";
+  /** per-class anchor pixel counts behind an auto-sampled run */
+  sampleClassCounts?: Record<string, number>;
 }
 
 export interface CompareSummaryRow {
@@ -279,6 +288,22 @@ export function makeAoi(aoiGeo?: AoiGeoInput): any {
   return ee.Geometry.Polygon([BORJ_COORDS]);
 }
 
+/** Exact AOI area in m² — Turf-style geodesic ring sum (the same formula as
+ *  the client's geo.ts), so the AOI chip, the results chip and PostGIS all
+ *  agree on one number. */
+export function aoiGeoAreaM2(aoiGeo?: AoiGeoInput): number {
+  if (aoiGeo?.type === "Polygon") {
+    return polygonAreaKm2((aoiGeo.coordinates as number[][][]) as unknown as LonLat[][]) * 1e6;
+  }
+  if (aoiGeo?.type === "MultiPolygon") {
+    return (aoiGeo.coordinates as number[][][][]).reduce(
+      (s, rings) => s + polygonAreaKm2(rings as unknown as LonLat[][]) * 1e6,
+      0
+    );
+  }
+  return polygonAreaKm2([BORJ_COORDS as unknown as LonLat[]]) * 1e6;
+}
+
 /* ------------------------------------------------------------------ */
 /* Instant scan — reference spectral signature library                 */
 /*                                                                    */
@@ -419,7 +444,7 @@ export function signatureSeason(start: string, end: string): "winter" | "summer"
 }
 
 /** Reduced 9-feature seasonal stack the signature classifier works on. */
-function signatureFeatures(s2: any): any {
+export function signatureFeatures(s2: any): any {
   const ndvi = s2.select("NDVI");
   const stats = ndvi.reduce(ee.Reducer.percentile([10, 90]))
     .addBands(ndvi.reduce(ee.Reducer.mean()).rename("NDVI_mean"));
@@ -542,6 +567,223 @@ function validateSamples(points: SampleInput[] | undefined) {
   if (pts.length < 20) throw new GEEError("too_few_samples");
   if (byClass.size < 2) throw new GEEError("need_two_classes");
   return { pts, byClass };
+}
+
+/* ------------------------------------------------------------------ */
+/* Zero-click auto-sampling — stratified spectral anchor extraction    */
+/*                                                                    */
+/* No manual points? The engine extracts high-confidence anchor pixels */
+/* from the user's own AOI instead of blocking the run:                */
+/*  1. every pixel is scored against the calibrated reference          */
+/*     signatures (NDVI/NDWI/NDMI + red/NIR/SWIR1/SWIR2 medians — the  */
+/*     same library that powers the instant scan, including the        */
+/*     bimodal bare-soil variants);                                   */
+/*  2. a pixel becomes an anchor of class c when c wins by a clear     */
+/*     spectral MARGIN (unambiguous pixels only — no prevalence bonus, */
+/*     so anchors are pure spectral evidence);                        */
+/*  3. urban anchors additionally must pass the strict built-up rule   */
+/*     (positive NDBI + dry NDWI + very low NDVI — see below);         */
+/*  4. 30–50+ anchor pixels per detected class are sampled at 20 m and */
+/*     fed into the standard 70/30 split, so OA, Kappa, PA/UA/F1 and   */
+/*     the confusion matrix are REAL measurements on the withheld 30%. */
+/* ------------------------------------------------------------------ */
+
+/** minimum winning margin over the runner-up class, in squared
+ *  SIG_SCALES-normalized units (≈0.6 scale-units of separation) */
+const ANCHOR_MARGIN = 0.35;
+
+/** Strict built-up (عمران) anchor rule — a hard gate ON TOP of the signature
+ *  margin, calibrated against the measured Borj El Arab probes
+ *  (scripts/probe_signatures.ts + probe_october.mjs + ESA WorldCover check):
+ *   - NDBI > -0.02 : built/material signature (crops ≈ -0.25, water ≈ -0.14).
+ *     NOT the generic NDBI > 0.05 floor: the measured town signature sits at
+ *     NDBI ≈ 0.03 while bright bare sand reaches 0.09, so a hard 0.05 floor
+ *     would reject the real town and admit sand. The multivariate signature
+ *     margin (B4/B8/B11/B12 brightness included) is what separates عمران
+ *     from bright بور — NDBI alone cannot at this site.
+ *   - NDWI < 0     : built-up is dry (measured towns ≈ -0.32).
+ *   - NDVI < 0.25  : very low vegetation. The ceiling is 0.25 rather than the
+ *     generic 0.15 because real Egyptian town blocks measure NDVI ≈ 0.22
+ *     (street trees); 0.15 would push the actual town out of its own class
+ *     and re-create the “missing urban” failure. */
+function urbanAnchorRule(x: any): any {
+  const b8 = x.select("B8_median");
+  const b11 = x.select("B11_median");
+  const ndbi = b11.subtract(b8).divide(b11.add(b8));
+  return ndbi.gt(-0.02)
+    .and(x.select("NDWI_mean").lt(0))
+    .and(x.select("NDVI_mean").lt(0.25));
+}
+
+/** Winner-class anchor image: the per-pixel winning class id (raw spectral
+ *  distance over all signature variants — no prevalence bonus), masked to
+ *  unambiguous pixels only (margin ≥ ANCHOR_MARGIN over the runner-up) and
+ *  gated by the strict عمران rule where the winner is urban. This band feeds
+ *  balanced stratified sampling. */
+export function anchorWinnerImage(sigFeats: any, season: "winter" | "summer" | "full"): any {
+  const x = sigFeats.select(SIG_FEATURES as unknown as string[]);
+  const scales = ee.Image.constant(SIG_SCALES);
+  const active = ACTIVE_SIGNATURE_CLASSES[season];
+
+  // best raw distance per class (variants compete within a class)
+  const perClass = new Map<number, any>();
+  for (const classId of active) {
+    for (const sig of variantsOf(classId, season)) {
+      const d = x.subtract(ee.Image.constant(sig)).divide(scales).pow(2)
+        .reduce(ee.Reducer.sum());
+      perClass.set(
+        classId,
+        perClass.has(classId) ? (perClass.get(classId) as any).min(d) : d
+      );
+    }
+  }
+
+  // winner + runner-up across classes → margin image
+  const ids = [...perClass.keys()];
+  let arg = ee.Image(0).rename("argmin");
+  let best = perClass.get(ids[0]) as any;
+  let second = ee.Image.constant(1e6);
+  let winner = ee.Image.constant(ids[0]).rename("class").toByte();
+  for (let k = 1; k < ids.length; k++) {
+    const cur = perClass.get(ids[k]) as any;
+    const better = cur.lt(best);
+    second = second.where(better, best); // demoted champion
+    best = best.where(better, cur); // new champion
+    arg = arg.where(better, ee.Image.constant(k));
+    winner = winner.where(better, ee.Image.constant(ids[k]));
+    second = second.where(cur.lt(second).and(better.not()), cur); // near-miss
+  }
+  const margin = second.subtract(best);
+
+  // high-confidence anchors only
+  let out = winner.updateMask(margin.gte(ANCHOR_MARGIN));
+  // strict built-up gate — applies only where the winner is عمران
+  const urbOk = urbanAnchorRule(x);
+  return out.updateMask(out.neq(11).or(urbOk));
+}
+
+export interface AutoSampleResult {
+  /** merged anchor FC (class property + split column) ready for 70/30 */
+  training: any;
+  /** anchor pixel counts per class id that passed the minimum filter */
+  counts: Record<string, number>;
+}
+
+/** Extract stratified spectral anchors inside the AOI: balanced sampling of
+ *  `numPixels` anchor pixels per DETECTED class (ee.Image.stratifiedSample —
+ *  Image.sample() draws with a probability computed against the whole region,
+ *  so rare classes come back nearly empty and are unusable for training).
+ *  Returns null when fewer than 2 classes gather `minPerClass` confident
+ *  pixels (e.g. a fully clouded window) — callers then fall back to the
+ *  instant estimate. */
+async function autoSampleTraining(
+  feats: any,
+  sigFeats: any,
+  aoi: any,
+  season: "winter" | "summer" | "full",
+  numPixels: number,
+  minPerClass: number
+): Promise<AutoSampleResult | null> {
+  try {
+    const winner = anchorWinnerImage(sigFeats, season);
+    const sampled = feats
+      .addBands(winner) // winner band is already named "class"
+      .stratifiedSample({
+        numPoints: numPixels,
+        classBand: "class",
+        region: aoi,
+        scale: 20,
+        seed: 42,
+        tileScale: 4,
+      });
+
+    const hist = await p<Record<string, number>>((cb) =>
+      sampled.aggregate_histogram("class").getInfo(cb));
+    const counts: Record<string, number> = {};
+    let total = 0;
+    for (const [k, v] of Object.entries(hist || {})) {
+      const id = Number(k);
+      const n = Number(v);
+      if (Number.isFinite(id) && Number.isFinite(n) && n >= minPerClass && id > 0) {
+        counts[k] = n;
+        total += n;
+      }
+    }
+    const classes = Object.keys(counts).map(Number);
+    if (classes.length < 2 || total < 20) return null;
+
+    // keep only classes that cleared the minimum (eq/or — basic filter ops,
+    // ee.Filter.inCollection is not available in every client build)
+    const keepFilter = classes
+      .map((id) => ee.Filter.eq("class", id))
+      .reduce((a, b) => ee.Filter.or(a, b));
+    const training = sampled
+      .filter(keepFilter)
+      .randomColumn("split", 42);
+    return { training, counts };
+  } catch (e) {
+    // best-effort by design — degrade to the instant estimate, never a 500
+    console.error("autoSampleTraining failed:", String((e as Error)?.message ?? e).slice(0, 300));
+    return null;
+  }
+}
+
+/** Prepared training sets for the supervised pipeline. */
+type PreparedTraining =
+  | { kind: "manual"; training: any }
+  | { kind: "auto"; training: any; counts: Record<string, number> }
+  | { kind: "instant_fallback" };
+
+/** Manual sample points are usable when at least 20 valid points across ≥ 2
+ *  classes were provided. Fewer or none → the run switches to Auto-Sampling
+ *  Mode (الاستخراج التلقائي للعينات) instead of failing the request. */
+function manualSampleState(points: SampleInput[] | undefined) {
+  const pts = (points || []).filter((s) =>
+    Number.isFinite(s.lon) && Number.isFinite(s.lat) && CLASSES.some((c) => c.id === s.classId));
+  const byClass = new Map<number, number>();
+  for (const s of pts) byClass.set(s.classId, (byClass.get(s.classId) ?? 0) + 1);
+  return { pts, byClass, ok: pts.length >= 20 && byClass.size >= 2 };
+}
+
+/** Build the training FC for a supervised run: the user's manual points when
+ *  they are sufficient, otherwise zero-click auto-sampling. `needMahalanobis`
+ *  sizes the anchor counts so every class clears the covariance requirement
+ *  (train pixels > feature bands). */
+async function prepareSupervisedTraining(opts: {
+  samplePoints: SampleInput[] | undefined;
+  feats: any;
+  s2: any;
+  aoi: any;
+  start: string;
+  end: string;
+  needMahalanobis: boolean;
+}): Promise<PreparedTraining> {
+  const { pts, ok } = manualSampleState(opts.samplePoints);
+  if (ok) {
+    const fc = ee.FeatureCollection(
+      pts.map((s) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+        properties: { class: s.classId },
+      }))
+    );
+    return { kind: "manual", training: sampleTraining(opts.feats, fc) };
+  }
+  // ---- Auto-Sampling Mode (الاستخراج التلقائي للعينات) ----
+  const season = signatureSeason(opts.start, opts.end);
+  const sig = signatureFeatures(opts.s2);
+  // monthly NDVI/NDWI/NDMI bands (3 × months) + NDVI stats (5) + B4/B8/B11/B12 (4)
+  const nBands = 3 * (Math.round(monthDiff(opts.start, opts.end)) + 1) + 9;
+  // Mahalanobis inverts a per-class covariance over all feature bands — the
+  // homogeneous anchor sets need a generous sample budget (≈140/class) or the
+  // inversion fails with "not enough data".
+  const numPixels = opts.needMahalanobis ? 140 : 50;
+  const minPerClass = opts.needMahalanobis ? Math.ceil(nBands / 0.7) + 4 : 25;
+  const auto = await autoSampleTraining(
+    opts.feats, sig, opts.aoi, season, numPixels, minPerClass
+  );
+  if (!auto) return { kind: "instant_fallback" };
+  return { kind: "auto", training: auto.training, counts: auto.counts };
 }
 
 /**
@@ -883,13 +1125,53 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   let noteCode: string | undefined;
   let vis: { min: string; max: string; palette: string };
 
-  if (input.algorithm === "signature") {
+  // ---- supervised training prep: manual points, or zero-click anchors ----
+  let training: any = null;
+  let sampleSource: "manual" | "auto" | undefined;
+  let autoCounts: Record<string, number> | undefined;
+  let autoFallback = false;
+  if (input.algorithm !== "signature" && input.algorithm !== "kmeans") {
+    const prep = await prepareSupervisedTraining({
+      samplePoints: input.samplePoints,
+      feats, s2, aoi, start, end,
+      needMahalanobis: input.algorithm === "mindist_m",
+    });
+    if (prep.kind === "instant_fallback") {
+      autoFallback = true;
+    } else {
+      training = prep.training;
+      sampleSource = prep.kind;
+      if (prep.kind === "auto") autoCounts = prep.counts;
+    }
+  }
+
+  /** Degrade a failing supervised run to the instant estimate — used when the
+   *  auto-sampled anchors cannot support an algorithm (e.g. the Mahalanobis
+   *  covariance inversion on very homogeneous anchor sets). */
+  const applyInstantFallback = () => {
+    const sig = signatureFeatures(s2);
+    classified = signatureClassifyImage(sig, signatureSeason(start, end)).clip(aoi);
+    vis = { min: "1", max: "12", palette: PALETTE_CSV };
+    noteCode = "auto_sample_failed";
+    nTrain = 0;
+    nVal = 0;
+    oa = null;
+    kappa = null;
+    perClass = null;
+    confusion = null;
+    sampleSource = undefined;
+    autoCounts = undefined;
+  };
+
+  if (input.algorithm === "signature" || autoFallback) {
     // ---- instant scan: nearest reference spectral signature (no samples) ----
+    // (the explicit instant scan, or the graceful fallback when a supervised
+    //  run could not gather enough high-confidence anchor pixels)
     const sig = signatureFeatures(s2);
     const season = signatureSeason(start, end);
     classified = signatureClassifyImage(sig, season).clip(aoi);
     vis = { min: "1", max: "12", palette: PALETTE_CSV };
-    noteCode = "instant_estimate";
+    noteCode = autoFallback ? "auto_sample_failed" : "instant_estimate";
     nTrain = 0;
     nVal = 0;
   } else if (input.algorithm === "kmeans") {
@@ -902,13 +1184,6 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     };
     noteCode = "kmeans_no_accuracy";
   } else {
-    const { pts } = validateSamples(input.samplePoints);
-    const fc = ee.FeatureCollection(pts.map((s) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [s.lon, s.lat] },
-      properties: { class: s.classId },
-    })));
-    const training = sampleTraining(feats, fc);
     const train = training.filter(ee.Filter.lt("split", 0.7));
     const val = training.filter(ee.Filter.gte("split", 0.7));
 
@@ -967,26 +1242,45 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
       }
     } else if (nVal >= 10) {
       const cm = val.classify(classifier!).errorMatrix("class", "classification");
-      const acc = await p<any>((cb) => ee.Dictionary({
-        oa: cm.accuracy(), kappa: cm.kappa(), matrix: cm.array().toList(),
-        classes: val.aggregate_array("class").distinct().sort(),
-      }).getInfo(cb));
-      oa = Number(acc.oa); kappa = Number(acc.kappa);
-      const valClasses: number[] = (acc.classes || []).map((x: unknown) => Number(x));
-      const raw: number[][] = (acc.matrix || []).map((row: unknown[]) =>
-        (row as unknown[]).map((x) => Number(x)));
-      // EE error matrices are indexed by class VALUE (0..maxValue), so they
-      // arrive with empty rows/cols for unsampled ids. Compact them to the
-      // axes actually present: validation classes + predicted classes.
-      const colTotal = (idx: number) => raw.reduce((s, row) => s + (row[idx] || 0), 0);
-      const predClasses = raw.map((_, idx) => idx).filter((idx) => colTotal(idx) > 0);
-      const axes = Array.from(new Set([...valClasses, ...predClasses]))
-        .filter((v) => v > 0)
-        .sort((a, b) => a - b);
-      if (axes.length > 1 && Math.max(...axes) < raw.length) {
-        const compact = axes.map((a) => axes.map((p) => raw[a]?.[p] || 0));
-        perClass = perClassMetrics(compact, axes);
-        confusion = { classIds: axes, rows: compact };
+      let acc: any;
+      try {
+        acc = await p<any>((cb) => ee.Dictionary({
+          oa: cm.accuracy(), kappa: cm.kappa(), matrix: cm.array().toList(),
+          classes: val.aggregate_array("class").distinct().sort(),
+        }).getInfo(cb));
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err);
+        if (/covariance/i.test(msg)) {
+          // auto anchors too homogeneous to invert the covariance — degrade
+          // to the instant estimate instead of failing the zero-click run
+          if (sampleSource === "auto") {
+            applyInstantFallback();
+            acc = null;
+          } else {
+            throw new GEEError("mahalanobis_needs_samples", msg);
+          }
+        } else {
+          throw err;
+        }
+      }
+      if (acc) {
+        oa = Number(acc.oa); kappa = Number(acc.kappa);
+        const valClasses: number[] = (acc.classes || []).map((x: unknown) => Number(x));
+        const raw: number[][] = (acc.matrix || []).map((row: unknown[]) =>
+          (row as unknown[]).map((x) => Number(x)));
+        // EE error matrices are indexed by class VALUE (0..maxValue), so they
+        // arrive with empty rows/cols for unsampled ids. Compact them to the
+        // axes actually present: validation classes + predicted classes.
+        const colTotal = (idx: number) => raw.reduce((s, row) => s + (row[idx] || 0), 0);
+        const predClasses = raw.map((_, idx) => idx).filter((idx) => colTotal(idx) > 0);
+        const axes = Array.from(new Set([...valClasses, ...predClasses]))
+          .filter((v) => v > 0)
+          .sort((a, b) => a - b);
+        if (axes.length > 1 && Math.max(...axes) < raw.length) {
+          const compact = axes.map((a) => axes.map((p2) => raw[a]?.[p2] || 0));
+          perClass = perClassMetrics(compact, axes);
+          confusion = { classIds: axes, rows: compact };
+        }
       }
     } else {
       noteCode = "no_accuracy";
@@ -994,25 +1288,42 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
   }
 
   // tiles + area stats in parallel
-  let mapId: any;
-  let areaRes: any;
-  try {
-    [mapId, areaRes] = await Promise.all([
+  const fetchTilesArea = () =>
+    Promise.all([
       p<any>((cb) => ee.data.getMapId({ image: classified, ...vis }, cb)),
       p<any>((cb) => ee.Image.pixelArea().addBands(classified).reduceRegion({
         reducer: ee.Reducer.sum().group({ groupField: 1, groupName: "class" }),
         geometry: aoi, scale: 100, maxPixels: 1e13,
       }).getInfo(cb)),
     ]);
+  let mapId: any;
+  let areaRes: any;
+  try {
+    [mapId, areaRes] = await fetchTilesArea();
   } catch (e) {
-    // map known server errors to friendly codes (e.g. singular covariance)
+    // map known server errors to friendly codes (e.g. singular covariance);
+    // auto-sampled runs degrade to the instant estimate instead of erroring
     const msg = String((e as Error)?.message ?? e);
-    if (/covariance/i.test(msg)) throw new GEEError("mahalanobis_needs_samples", msg);
-    throw e;
+    if (/covariance/i.test(msg)) {
+      if (sampleSource === "auto") {
+        applyInstantFallback();
+        [mapId, areaRes] = await fetchTilesArea();
+      } else {
+        throw new GEEError("mahalanobis_needs_samples", msg);
+      }
+    } else {
+      throw e;
+    }
   }
 
   const groups: { class: number; sum: number }[] = areaRes.groups || [];
   const totalM2 = groups.reduce((s, g) => s + g.sum, 0);
+  // Single source of truth for the TOTAL area: the exact geodesic polygon
+  // area (same formula as the client's geo.ts / PostGIS ST_Area). Class pixel
+  // areas are measured at 100 m, so they are rescaled proportionally to sum
+  // exactly to it — every panel then shows identical strings.
+  const aoiM2 = aoiGeoAreaM2(input.aoiGeo);
+  const areaScale = totalM2 > 0 ? aoiM2 / totalM2 : 1;
 
   // rounding fixup: displayed percentages must sum to exactly 100.0
   const percentOf = (m2: number) => (totalM2 ? +((m2 / totalM2) * 100).toFixed(1) : 0);
@@ -1034,7 +1345,7 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
       : CLASSES.find((c) => c.id === id) || CLASSES[0];
     rowsMap.set(id, {
       classId: id, code: base.code, en: base.en, ar: base.ar, color: base.color,
-      areaKm2: +(g.sum / 1e6).toFixed(2),
+      areaKm2: +((g.sum * areaScale) / 1e6).toFixed(2),
       percent: fixedPercent.get(g.class) ?? percentOf(g.sum),
       pa: null, ua: null, f1: null, support: 0,
     });
@@ -1077,8 +1388,10 @@ export async function runClassification(input: RunInput): Promise<RunResult> {
     durationMs: Date.now() - t0,
     downloadUrl,
     noteCode,
-    areaKm2: +(totalM2 / 1e6).toFixed(2),
+    areaKm2: +(aoiM2 / 1e6).toFixed(2),
     aoiName: input.aoiName ?? null,
+    sampleSource,
+    sampleClassCounts: autoCounts,
   };
 }
 
@@ -1099,19 +1412,25 @@ export async function compareAll(input: PeriodInput & {
   const cloud = input.cloudMax ?? 60;
   const rfTrees = input.rfTrees ?? 100;
   const knnK = input.knnK ?? 5;
-  validateSamples(input.samplePoints);
 
   const nImages = await p<number>((cb) =>
     rawCollection(aoi, start, end, cloud).size().getInfo(cb));
   if (!nImages) throw new GEEError("no_images");
   const s2 = getS2(aoi, start, end, cloud);
   const feats = buildFeatures(s2, start, end);
-  const fc = ee.FeatureCollection((input.samplePoints || []).map((s) => ({
-    type: "Feature",
-    geometry: { type: "Point", coordinates: [s.lon, s.lat] },
-    properties: { class: s.classId },
-  })));
-  const training = sampleTraining(feats, fc);
+
+  // training set: the user's manual points when provided, zero-click
+  // stratified spectral anchors otherwise (sized for mindist_m — the league
+  // includes the Mahalanobis covariance requirement)
+  const prep = await prepareSupervisedTraining({
+    samplePoints: input.samplePoints, feats, s2, aoi, start, end,
+    needMahalanobis: true,
+  });
+  if (prep.kind === "instant_fallback") {
+    throw new GEEError("auto_sample_failed",
+      "not enough high-confidence anchor classes for auto-sampling in this window");
+  }
+  const training = prep.training;
   const nSampled = await p<number>((cb) => training.size().getInfo(cb));
   if (!nSampled) throw new GEEError("samples_outside_aoi");
   const train = training.filter(ee.Filter.lt("split", 0.7));

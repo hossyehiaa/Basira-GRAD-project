@@ -24,6 +24,7 @@ import {
   LineChart as LineChartIcon,
   Swords,
   Ruler,
+  Target,
   Zap,
 } from "lucide-react";
 import {
@@ -53,6 +54,7 @@ import {
   NDVI_PROFILES,
 } from "@/lib/basira/constants";
 import { CROP_DSS, FEDDAN_PER_KM2 } from "@/lib/basira/agronomy";
+import { fmtAreaTotal } from "@/lib/basira/area";
 import { AnimatedNumber } from "./AnimatedNumber";
 
 interface HistoryRow {
@@ -113,7 +115,6 @@ export function ResultsPanel() {
     (runResult?.classes?.length
       ? runResult.classes.reduce((s, c) => s + (c.areaKm2 ?? 0), 0)
       : null);
-  const scannedFeddan = scannedKm2 != null ? scannedKm2 * FEDDAN_PER_KM2 : null;
 
   function downloadCsv() {
     if (!runResult) return;
@@ -136,9 +137,10 @@ export function ResultsPanel() {
     URL.revokeObjectURL(url);
   }
 
-  /* Summer↔winter transition windows (mid-month Apr/May or Oct/Nov): most
-   * fields are harvested/bare, so the instant scan's bare-land separation is
-   * limited — surface an explicit agronomic note instead of silent confusion.
+  /* Summer↔winter transition windows: short windows whose mid-month falls in
+   * Apr/May or Oct/Nov, or any window whose days lie mostly (≥45%) in those
+   * sowing/harvest months — most fields are bare then, so surface the
+   * agronomic note instead of silent confusion.
    * (Computed before the null early-return to keep hook order stable.) */
   const isTransition = useMemo(() => {
     const d1 = runResult?.dateFrom ?? "";
@@ -148,7 +150,17 @@ export function ResultsPanel() {
     const b = new Date(d2).getTime();
     if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return false;
     const midMonth = new Date((a + b) / 2).getMonth() + 1;
-    return [4, 5, 10, 11].includes(midMonth);
+    if ([4, 5, 10, 11].includes(midMonth)) return true;
+    // long windows: “mostly” in the transition = ≥45% of days in Oct–Nov or Apr–May
+    const dayMs = 86400000;
+    let days = 0, octNov = 0, aprMay = 0;
+    for (let t = a; t < b; t += dayMs) {
+      const m = new Date(t).getUTCMonth() + 1;
+      days++;
+      if (m === 10 || m === 11) octNov++;
+      if (m === 4 || m === 5) aprMay++;
+    }
+    return days > 0 && (octNov / days >= 0.45 || aprMay / days >= 0.45);
   }, [runResult?.dateFrom, runResult?.dateTo]);
 
   if (!runResult) {
@@ -269,8 +281,7 @@ export function ResultsPanel() {
         {scannedKm2 != null && scannedKm2 > 0 && (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[11px] font-bold text-primary">
             <Ruler className="size-3" />
-            {t(lang, "aoiTotal")}: {fmt1(scannedKm2)} {t(lang, "km2Unit")} ·{" "}
-            {fmtInt(scannedFeddan ?? 0)} {t(lang, "feddanUnit")}
+            {t(lang, "aoiTotal")}: {fmtAreaTotal(scannedKm2, lang)}
           </span>
         )}
       </div>
@@ -278,12 +289,34 @@ export function ResultsPanel() {
       {/* no-accuracy warning: supervised run with too few validation samples */}
       {runResult.algorithm !== "kmeans" &&
         !isInstant &&
+        runResult.noteCode !== "auto_sample_failed" &&
         (runResult.oa == null || (runResult.nVal != null && runResult.nVal < 10)) && (
           <div className="flex items-start gap-2 rounded-xl border border-amber-500/60 bg-amber-500/10 p-3 text-[11px] font-bold leading-relaxed text-amber-700 dark:text-amber-400">
             <span aria-hidden>⚠</span>
             <span>{t(lang, "warnNoAcc")}</span>
           </div>
         )}
+
+      {/* zero-click auto-sampling (الاستخراج التلقائي للعينات) */}
+      {runResult.sampleSource === "auto" && !isInstant && (
+        <div className="flex items-start gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/10 p-3 text-[11px] font-bold leading-relaxed text-emerald-700 dark:text-emerald-400">
+          <Target className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {t(lang, "autoSampleBadge")}:{" "}
+            {t(lang, "autoSampleNote")
+              .replace("{n}", String(runResult.autoSampleN ?? "—"))
+              .replace("{c}", String(runResult.autoSampleClasses ?? "—"))}
+          </span>
+        </div>
+      )}
+
+      {/* supervised run fell back to the instant estimate (no confident anchors) */}
+      {runResult.noteCode === "auto_sample_failed" && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/60 bg-amber-500/10 p-3 text-[11px] font-bold leading-relaxed text-amber-700 dark:text-amber-400">
+          <span aria-hidden>⚠</span>
+          <span>{t(lang, "autoFallbackNote")}</span>
+        </div>
+      )}
 
       {/* instant-scan estimate note */}
       {isInstant && (

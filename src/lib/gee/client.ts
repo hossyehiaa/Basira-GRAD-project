@@ -177,6 +177,10 @@ export function geeErrorMessage(lang: "ar" | "en", code?: string): string {
       "العينات قليلة جدًا — الحد الأدنى ٢٠ نقطة، ويُنصح بـ ٣٠ نقطة لكل فئة على الأقل للحصول على نتائج موثوقة (ارسمها على الخريطة أو ارفع ملف CSV).",
       "Too few samples — the minimum is 20 points; 30+ per class is recommended for reliable results (draw on the map or upload a CSV).",
     ],
+    auto_sample_failed: [
+      "تعذّر استخراج عينات تدريب تلقائية عالية الثقة لهذه الفترة/المنطقة — جرّب فترة أطول أو أضف عينات يدوية.",
+      "Could not auto-extract enough high-confidence training samples for this period/area — try a longer period or add manual samples.",
+    ],
     need_two_classes: [
       "أدخل عينات لفئتين مختلفتين على الأقل قبل التصنيف الموجّه.",
       "Sample at least two different classes before supervised classification.",
